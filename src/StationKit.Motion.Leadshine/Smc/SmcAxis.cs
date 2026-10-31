@@ -129,15 +129,22 @@ public sealed class SmcAxis : LeadshineAxisBase
         }
 
         var start = Time.GetTimestamp();
-        while (ReadAlarm())
+        var seen = MarkIssued();
+        while (true)
         {
+            var (_, snapshot) = await NextAsync(seen, cancellationToken).ConfigureAwait(false);
+            if (!LeadshineAxisIo.Parse(snapshot.Io).Alarm)
+            {
+                return;
+            }
+
             if (Time.GetElapsedTime(start) > reset.ClearTimeout)
             {
                 throw new MotionFaultException(Name,
                     $"已輸出報警復位信號，{reset.ClearTimeout.TotalMilliseconds:0} ms 內 ALM 仍未消失，需檢查驅動器");
             }
 
-            await Task.Delay(_options.PollInterval, Time, cancellationToken).ConfigureAwait(false);
+            seen = snapshot.Cycle;
         }
     }
 
@@ -162,13 +169,6 @@ public sealed class SmcAxis : LeadshineAxisBase
             Guard.EnsureSuccess(Api("write_outbit"), _api.WriteOutputBit(Card, reset.OutputBit, level),
                 $"bit={reset.OutputBit}, level={level}", stage);
         }
-    }
-
-    private bool ReadAlarm()
-    {
-        var result = _api.ReadAxisIoStatus(Card, Axis, out var raw);
-        Guard.EnsureSuccess(Api("axis_io_status"), result, "read", "Reset", $"0x{raw:X}");
-        return LeadshineAxisIo.Parse(raw).Alarm;
     }
 
     /// <summary>寫入、返回碼檢查、回讀、比對，任何一步不通過都拋出異常。</summary>

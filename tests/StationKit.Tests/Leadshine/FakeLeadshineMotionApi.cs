@@ -249,7 +249,7 @@ internal abstract class FakeLeadshineMotionApi(string prefix) : ILeadshineMotion
         return 0;
     }
 
-    private void CountRead(string apiName, ushort axisNo)
+    protected void CountRead(string apiName, ushort axisNo)
     {
         if (ThrowOnRead?.Invoke(axisNo) == true)
         {
@@ -270,17 +270,12 @@ internal abstract class FakeLeadshineMotionApi(string prefix) : ILeadshineMotion
         }
     }
 
-    protected ushort TakeHomeResult()
+    /// <summary>回零結果和真卡一樣是狀態：完成後一直保持 1，直到下一次回零開始。</summary>
+    protected ushort CurrentHomeResult()
     {
         lock (_sync)
         {
-            if (_homing && _pollsUntilDone == 0)
-            {
-                _homing = false;
-                return 1;
-            }
-
-            return 0;
+            return _homing && _pollsUntilDone == 0 ? (ushort)1 : (ushort)0;
         }
     }
 

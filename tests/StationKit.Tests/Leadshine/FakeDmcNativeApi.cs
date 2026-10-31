@@ -35,6 +35,7 @@ internal sealed class FakeDmcNativeApi() : FakeLeadshineMotionApi("dmc"), IDmcNa
 
     public short GetAxisErrorCode(ushort cardNo, ushort axisNo, out ushort errorCode)
     {
+        CountRead("nmc_get_axis_errcode", axisNo);
         errorCode = AxisErrorCode;
         return 0;
     }
@@ -64,7 +65,7 @@ internal sealed class FakeDmcNativeApi() : FakeLeadshineMotionApi("dmc"), IDmcNa
 
     public short GetHomeResult(ushort cardNo, ushort axisNo, out ushort state)
     {
-        state = TakeHomeResult();
+        state = CurrentHomeResult();
         return 0;
     }
 }

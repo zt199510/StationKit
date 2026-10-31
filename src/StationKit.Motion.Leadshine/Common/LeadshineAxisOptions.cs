@@ -86,6 +86,4 @@ public abstract record LeadshineAxisOptions
     /// 單次點動最長時間，到時減速停止並報故障。這是最後一道兜底，正常應由界面的 JogSession 看門狗停軸。
     /// </summary>
     public TimeSpan JogTimeout { get; init; } = TimeSpan.FromSeconds(60);
-
-    public TimeSpan PollInterval { get; init; } = TimeSpan.FromMilliseconds(10);
 }

@@ -23,6 +23,7 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
 
     private readonly ILeadshineMotionApi _api;
     private readonly LeadshineStatusPoller _poller;
+    private long _fence;
     private readonly LeadshineAxisOptions _options;
     private readonly SemaphoreSlim _motionCommandGate = new(1, 1);
     private readonly object _sync = new();
@@ -84,8 +85,10 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
             }
         }
 
-        // 所有校驗通過後才註冊，避免構造失敗的軸留在輪詢列表裡
-        poller.Register(options.AxisNo, options.Feedback == LeadshineFeedback.Encoder);
+        // 所有校驗通過後才註冊，避免構造失敗的軸留在輪詢列表裡。
+        // 報警詳情由輪詢在持卡鎖時讀取；子類構造體尚未執行完時被調用會拋異常，輪詢器會兜住並給出通用描述
+        poller.Register(options.AxisNo, options.Feedback == LeadshineFeedback.Encoder, DescribeServoAlarm);
+        _fence = poller.CurrentCycle;
     }
 
     public string Name => _options.Name;
@@ -157,7 +160,7 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
         await _motionCommandGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var status = ReadStatusDirect();
+            var status = await FreshStatusAsync(cancellationToken).ConfigureAwait(false);
             if (status.State == AxisState.Alarm)
             {
                 throw new MotionFaultException(Name, $"報警中，需先復位：{status.AlarmReason}");
@@ -165,6 +168,7 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
 
             cancellationToken.ThrowIfCancellationRequested();
             await EnableCoreAsync().ConfigureAwait(false);
+            MarkIssued();
             lock (_sync)
             {
                 _enabled = true;
@@ -189,6 +193,7 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
             }
 
             await DisableCoreAsync().ConfigureAwait(false);
+            MarkIssued();
         }
         finally
         {
@@ -207,10 +212,11 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
         }
 
         LimitWatch limits;
+        long issuedAt;
         await _motionCommandGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var start = EnsureReadyForMotion().Position;
+            var start = (await EnsureReadyForMotionAsync(cancellationToken).ConfigureAwait(false)).Position;
             // 只盯運動方向上的限位：停在負限位上往正方向走出來，不能誤報負限位
             limits = new LimitWatch(Positive: position > start, Negative: position < start);
             ApplyProfile(profile, "Move");
@@ -219,16 +225,17 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
             cancellationToken.ThrowIfCancellationRequested();
             Guard.EnsureSuccess(Api("pmove_unit"), _api.MoveAbsolute(Card, Axis, position),
                 $"target={position:R}, posi_mode=1", "Move");
+            issuedAt = MarkIssued();
         }
         finally
         {
             _motionCommandGate.Release();
         }
 
-        await WaitUntilAsync("Move", _options.MotionTimeout, status => status.State == AxisState.Idle, limits,
-            cancellationToken).ConfigureAwait(false);
+        var (final, finalSnapshot) = await WaitUntilAsync("Move", _options.MotionTimeout,
+            (status, _) => status.State == AxisState.Idle, limits, issuedAt, cancellationToken).ConfigureAwait(false);
 
-        var actual = ReadStatusDirect().Position;
+        var actual = final.Position;
         if (Math.Abs(actual - position) > _options.InPositionTolerance)
         {
             throw new MotionFaultException(Name,
@@ -237,7 +244,7 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
 
         if (_options.InPositionSignal.Enabled)
         {
-            await WaitInPositionSignalAsync(cancellationToken).ConfigureAwait(false);
+            await WaitInPositionSignalAsync(finalSnapshot, cancellationToken).ConfigureAwait(false);
         }
         else if (_options.SettleTime > TimeSpan.Zero)
         {
@@ -255,6 +262,7 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
         {
             Guard.EnsureSuccess(Api("stop"), _api.StopAxis(Card, Axis, leadshineMode),
                 $"stop_mode={(ushort)leadshineMode}", "Stop");
+            MarkIssued();
         }
         finally
         {
@@ -274,10 +282,11 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
         var side = positive ? "正" : "負";
         try
         {
+            long issuedAt;
             await _motionCommandGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                var status = EnsureReadyForMotion();
+                var status = await EnsureReadyForMotionAsync(cancellationToken).ConfigureAwait(false);
                 if (positive ? status.PositiveLimit : status.NegativeLimit)
                 {
                     throw new MotionFaultException(Name, $"已在{side}限位上，不能繼續{side}向點動");
@@ -288,14 +297,15 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
                 cancellationToken.ThrowIfCancellationRequested();
                 Guard.EnsureSuccess(Api("vmove"), _api.MoveContinuous(Card, Axis, direction),
                     $"dir={(positive ? 1 : 0)}, v={profile.Velocity:R}", "Jog");
+                issuedAt = MarkIssued();
             }
             finally
             {
                 _motionCommandGate.Release();
             }
 
-            await WaitUntilAsync("Jog", _options.JogTimeout, status => status.State == AxisState.Idle,
-                new LimitWatch(positive, !positive), cancellationToken).ConfigureAwait(false);
+            await WaitUntilAsync("Jog", _options.JogTimeout, (status, _) => status.State == AxisState.Idle,
+                new LimitWatch(positive, !positive), issuedAt, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -316,10 +326,11 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
             return;
         }
 
+        long issuedAt;
         await _motionCommandGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            EnsureReadyForMotion();
+            await EnsureReadyForMotionAsync(cancellationToken).ConfigureAwait(false);
             lock (_sync)
             {
                 _homed = false;
@@ -330,6 +341,7 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
 
             cancellationToken.ThrowIfCancellationRequested();
             Guard.EnsureSuccess(Api("home_move"), StartHome(), "home=start", "Home");
+            issuedAt = MarkIssued();
             lock (_sync)
             {
                 _homing = true;
@@ -342,8 +354,8 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
 
         try
         {
-            await WaitUntilAsync("Home", _options.HomeTimeout, _ => IsHomeFinished(), LimitWatch.Both,
-                cancellationToken).ConfigureAwait(false);
+            await WaitUntilAsync("Home", _options.HomeTimeout, (_, snapshot) => IsHomeFinished(snapshot),
+                LimitWatch.Both, issuedAt, cancellationToken).ConfigureAwait(false);
             // 回零後處理（例如脈衝軸對齊編碼器），失敗則不算回零完成
             OnHomeCompleted();
             lock (_sync)
@@ -370,7 +382,7 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
         await _motionCommandGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            EnsureReadyForMotion();
+            await EnsureReadyForMotionAsync(cancellationToken).ConfigureAwait(false);
             AxisSafetyConfig safety;
             lock (_sync)
             {
@@ -402,6 +414,8 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
             Guard.EnsureSuccess(Api("get_position_unit"), result, $"pos={absolute:R}", stage, $"pos={command:R}");
             Guard.EnsureReadback(Api("get_position_unit"), Math.Abs(command - absolute) <= 1 / _options.PulseEquivalent,
                 $"pos={absolute:R}", $"pos={command:R}", stage);
+            // 指令位置改了，之前的快照作廢
+            MarkIssued();
         }
         finally
         {
@@ -430,6 +444,7 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
             }
 
             await ResetAlarmCoreAsync(cancellationToken).ConfigureAwait(false);
+            MarkIssued();
         }
         finally
         {
@@ -573,18 +588,37 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
     protected static string Describe(LeadshineSoftLimit s) =>
         $"enable={s.Enabled}, source={s.Source}, action={s.Action}, n={s.Negative:R}, p={s.Positive:R}";
 
-    /// <summary>直接讀卡（持卡鎖）生成狀態。內部等待在改為按輪詢週期之前暫時使用。</summary>
-    private AxisStatus ReadStatusDirect()
+    /// <summary>
+    /// 記錄圍欄：下發指令後調用。之後只接受週期號大於圍欄的快照，
+    /// 防止把指令下發前（或下發時正在讀）的舊快照當成指令的結果（docs/design/central-polling.md 4.1）。
+    /// </summary>
+    protected long MarkIssued()
     {
-        LeadshineAxisSnapshot snapshot;
-        lock (_poller.Gate.Sync)
-        {
-            snapshot = LeadshineAxisSnapshot.Read(_api, Card, Axis, _options.Feedback == LeadshineFeedback.Encoder,
-                cycle: -1, Time.GetTimestamp());
-        }
-
-        return BuildStatus(snapshot);
+        var cycle = _poller.CurrentCycle;
+        Interlocked.Exchange(ref _fence, cycle);
+        return cycle;
     }
+
+    /// <summary>等一個週期號大於 <paramref name="afterCycle"/> 的快照。本軸在某一輪讀取異常時，繼續等下一輪。</summary>
+    protected async Task<(AxisStatus Status, LeadshineAxisSnapshot Snapshot)> NextAsync(long afterCycle,
+        CancellationToken cancellationToken)
+    {
+        var waitAfter = afterCycle;
+        while (true)
+        {
+            var snapshot = _poller.GetSnapshot(Axis);
+            if (snapshot != null && snapshot.Cycle > afterCycle)
+            {
+                return (BuildStatus(snapshot), snapshot);
+            }
+
+            waitAfter = await _poller.WaitForCycleAsync(waitAfter, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>反映了最後一條指令的狀態：最新快照已經晚於圍欄就直接用，否則等下一輪。</summary>
+    private async Task<AxisStatus> FreshStatusAsync(CancellationToken cancellationToken) =>
+        (await NextAsync(Interlocked.Read(ref _fence), cancellationToken).ConfigureAwait(false)).Status;
 
     private AxisStatus BuildStatus(LeadshineAxisSnapshot snapshot)
     {
@@ -602,7 +636,7 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
         }
 
         var io = LeadshineAxisIo.Parse(snapshot.Io);
-        var alarm = io.Alarm ? DescribeServoAlarm() : io.EmergencyStop ? "急停 EMG 有效" : null;
+        var alarm = io.Alarm ? snapshot.AlarmDetail ?? "伺服報警 ALM" : io.EmergencyStop ? "急停 EMG 有效" : null;
         var state = alarm != null ? AxisState.Alarm
             : !enabled ? AxisState.Disabled
             : homing ? AxisState.Homing
@@ -612,9 +646,9 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
             snapshot.Feedback);
     }
 
-    private AxisStatus EnsureReadyForMotion()
+    private async Task<AxisStatus> EnsureReadyForMotionAsync(CancellationToken cancellationToken)
     {
-        var status = ReadStatusDirect();
+        var status = await FreshStatusAsync(cancellationToken).ConfigureAwait(false);
         return status.State switch
         {
             AxisState.Alarm => throw new MotionFaultException(Name, $"報警中：{status.AlarmReason}"),
@@ -641,23 +675,17 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
     /// 等 INP 有效。check_done == 1 只代表規劃走完（脈衝軸是脈衝發完），伺服還在追跟隨誤差，
     /// 馬上拍照或加工會偏。這裡等驅動器自己報告到位，代替「運動完 Sleep 幾十毫秒」。
     /// </summary>
-    private async Task WaitInPositionSignalAsync(CancellationToken cancellationToken)
+    private async Task WaitInPositionSignalAsync(LeadshineAxisSnapshot from, CancellationToken cancellationToken)
     {
         var start = Time.GetTimestamp();
+        var snapshot = from;
         while (true)
         {
-            // 每次輪詢都記日誌會刷屏，這裡只在失敗時拋出
-            var result = _api.ReadAxisIoStatus(Card, Axis, out var raw);
-            if (result != 0)
-            {
-                throw new LeadshineCallException(Name, Api("axis_io_status"), result,
-                    $"等待 INP 時讀取 IO 狀態失敗：錯誤碼 {result}");
-            }
-
-            var io = LeadshineAxisIo.Parse(raw);
+            var io = LeadshineAxisIo.Parse(snapshot.Io);
             if (io.Alarm || io.EmergencyStop)
             {
-                throw new MotionFaultException(Name, $"等待 INP 時{(io.Alarm ? DescribeServoAlarm() : "急停 EMG 有效")}");
+                var reason = io.Alarm ? snapshot.AlarmDetail ?? "伺服報警 ALM" : "急停 EMG 有效";
+                throw new MotionFaultException(Name, $"等待 INP 時{reason}");
             }
 
             if (io.InPosition)
@@ -673,7 +701,7 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
             }
 
             // 指令已經走完，這裡取消不需要停軸
-            await Task.Delay(_options.PollInterval, Time, cancellationToken).ConfigureAwait(false);
+            snapshot = (await NextAsync(snapshot.Cycle, cancellationToken).ConfigureAwait(false)).Snapshot;
         }
     }
 
@@ -681,17 +709,20 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
     private async Task WaitStoppedAsync(string stage)
     {
         var start = Time.GetTimestamp();
+        var seen = Interlocked.Read(ref _fence);
         while (true)
         {
-            var done = _api.CheckDone(Card, Axis);
-            if (done == 1)
+            // 停止不可取消
+            var (_, snapshot) = await NextAsync(seen, CancellationToken.None).ConfigureAwait(false);
+            if (snapshot.Done == 1)
             {
                 return;
             }
 
-            if (done != 0)
+            if (snapshot.Done != 0)
             {
-                throw new LeadshineCallException(Name, Api("check_done"), done, $"{stage} 停止確認失敗：check_done={done}");
+                throw new LeadshineCallException(Name, Api("check_done"), snapshot.Done,
+                    $"{stage} 停止確認失敗：check_done={snapshot.Done}");
             }
 
             if (Time.GetElapsedTime(start) > _options.MotionTimeout)
@@ -699,7 +730,7 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
                 throw new MotionFaultException(Name, $"{stage} 已發出停止，但軸在超時內沒有停下");
             }
 
-            await Task.Delay(_options.PollInterval, Time).ConfigureAwait(false);
+            seen = snapshot.Cycle;
         }
     }
 
@@ -710,19 +741,22 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
     }
 
     /// <summary>
-    /// 輪詢直到完成。期間出現報警立即急停並報故障；超時減速停止並報故障；
-    /// 調用方取消時先停軸，再拋出取消。
+    /// 按輪詢週期等待直到完成：每輪拿一個比上次更新的快照，第一個快照必須晚於下發時的圍欄。
+    /// 期間出現報警立即急停並報故障；超時減速停止並報故障；調用方取消時先停軸，再拋出取消。
+    /// 返回判定完成時的狀態和快照。
     /// </summary>
-    private async Task WaitUntilAsync(string stage, TimeSpan timeout, Func<AxisStatus, bool> finished,
-        LimitWatch limits, CancellationToken cancellationToken)
+    private async Task<(AxisStatus Status, LeadshineAxisSnapshot Snapshot)> WaitUntilAsync(string stage,
+        TimeSpan timeout, Func<AxisStatus, LeadshineAxisSnapshot, bool> finished, LimitWatch limits, long issuedAt,
+        CancellationToken cancellationToken)
     {
         var start = Time.GetTimestamp();
+        var seen = issuedAt;
         try
         {
             while (true)
             {
-                await Task.Delay(_options.PollInterval, Time, cancellationToken).ConfigureAwait(false);
-                var status = ReadStatusDirect();
+                var (status, snapshot) = await NextAsync(seen, cancellationToken).ConfigureAwait(false);
+                seen = snapshot.Cycle;
                 if (status.State == AxisState.Alarm)
                 {
                     await StopAsync(StopMode.Immediate).ConfigureAwait(false);
@@ -736,9 +770,9 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
                     throw new MotionFaultException(Name, $"{stage} 過程中觸發{(positiveHit ? "正" : "負")}限位");
                 }
 
-                if (finished(status))
+                if (finished(status, snapshot))
                 {
-                    return;
+                    return (status, snapshot);
                 }
 
                 if (Time.GetElapsedTime(start) > timeout)
@@ -757,7 +791,7 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
         }
     }
 
-    private bool IsHomeFinished()
+    private bool IsHomeFinished(LeadshineAxisSnapshot snapshot)
     {
         var result = ReadHomeResult(out var state);
         if (result != 0 || state is not (0 or 1))
@@ -766,8 +800,8 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
                 $"回零結果讀取失敗：錯誤碼 {result}，狀態 {state}");
         }
 
-        // 1 才表示本次回零完成，並且要等軸真正停下來
-        return state == 1 && _api.CheckDone(Card, Axis) == 1;
+        // 1 才表示本次回零完成，並且要等軸真正停下來（停止狀態取自圍欄之後的快照）
+        return state == 1 && snapshot.Done == 1;
     }
 
     private LeadshineSoftLimit ExpectedSoftLimit(AxisSafetyConfig config) =>

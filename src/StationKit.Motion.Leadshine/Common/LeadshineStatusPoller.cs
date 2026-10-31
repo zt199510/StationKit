@@ -22,6 +22,8 @@ public sealed class LeadshineStatusPoller : IDisposable
     private readonly HashSet<ushort> _failingAxes = [];
     private Registration[] _axes = [];
     private long _cycle;
+    private long _completedCycle;
+    private TaskCompletionSource _cycleCompleted = NewSignal();
     private CancellationTokenSource? _loopCts;
     private Task? _loop;
 
@@ -43,8 +45,11 @@ public sealed class LeadshineStatusPoller : IDisposable
     /// <summary>這張卡的 DLL 調用鎖，輪詢器、控制器和軸共用。</summary>
     internal LeadshineCardGate Gate { get; } = new();
 
-    /// <summary>最近一輪開始時的週期號。</summary>
+    /// <summary>最近一輪開始時的週期號。下發指令後讀它作為圍欄：只有週期號更大的快照才是指令之後讀的。</summary>
     public long CurrentCycle => Interlocked.Read(ref _cycle);
+
+    /// <summary>最近讀完的一輪的週期號。</summary>
+    public long CompletedCycle => Interlocked.Read(ref _completedCycle);
 
     public bool IsRunning => _loop is { IsCompleted: false };
 
@@ -58,6 +63,27 @@ public sealed class LeadshineStatusPoller : IDisposable
             {
                 RefreshAxis(axis, cycle);
             }
+
+            // 先更新完成號，再喚醒等待方：等待方被喚醒後一定能看到新的完成號
+            Interlocked.Exchange(ref _completedCycle, cycle);
+            Interlocked.Exchange(ref _cycleCompleted, NewSignal()).TrySetResult();
+        }
+    }
+
+    /// <summary>等到週期號大於 <paramref name="afterCycle"/> 的一輪讀完，返回讀完的週期號。</summary>
+    public async Task<long> WaitForCycleAsync(long afterCycle, CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            // 先取信號再判斷：判斷之後才完成的那一輪一定會設置這個信號，不會漏掉
+            var signal = Volatile.Read(ref _cycleCompleted);
+            var completed = CompletedCycle;
+            if (completed > afterCycle)
+            {
+                return completed;
+            }
+
+            await signal.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -107,7 +133,8 @@ public sealed class LeadshineStatusPoller : IDisposable
 
     public void Dispose() => Stop();
 
-    internal void Register(ushort axisNo, bool readFeedback)
+    /// <param name="describeAlarm">ALM 有效時在輪詢中調用（持卡鎖），讀出報警詳情存進快照。</param>
+    internal void Register(ushort axisNo, bool readFeedback, Func<string>? describeAlarm = null)
     {
         lock (_registrationSync)
         {
@@ -117,7 +144,7 @@ public sealed class LeadshineStatusPoller : IDisposable
             }
 
             // 寫時複製：輪詢循環拿到的數組不會在遍歷中被修改
-            Volatile.Write(ref _axes, [.. _axes, new Registration(axisNo, readFeedback)]);
+            Volatile.Write(ref _axes, [.. _axes, new Registration(axisNo, readFeedback, describeAlarm)]);
         }
     }
 
@@ -150,6 +177,10 @@ public sealed class LeadshineStatusPoller : IDisposable
             {
                 snapshot = LeadshineAxisSnapshot.Read(_api, CardNo, axis.AxisNo, axis.ReadFeedback, cycle,
                     _time.GetTimestamp());
+                if (axis.DescribeAlarm != null && LeadshineAxisIo.Parse(snapshot.Io).Alarm)
+                {
+                    snapshot = snapshot with { AlarmDetail = DescribeAlarm(axis) };
+                }
             }
 
             _snapshots[axis.AxisNo] = snapshot;
@@ -168,8 +199,23 @@ public sealed class LeadshineStatusPoller : IDisposable
         }
     }
 
+    private static string DescribeAlarm(Registration axis)
+    {
+        try
+        {
+            return axis.DescribeAlarm!();
+        }
+        catch (Exception ex)
+        {
+            // 報警詳情只是附加信息，讀不出來也不能影響快照本身（ALM 位照樣生效）
+            return $"伺服報警 ALM（報警詳情讀取異常：{ex.GetType().Name}）";
+        }
+    }
+
+    private static TaskCompletionSource NewSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     private void Log(string message, string prefix = "") =>
         _log?.Invoke($"{prefix}{_family} 輪詢：CardId={CardNo}, {message}");
 
-    private sealed record Registration(ushort AxisNo, bool ReadFeedback);
+    private sealed record Registration(ushort AxisNo, bool ReadFeedback, Func<string>? DescribeAlarm);
 }

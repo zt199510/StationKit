@@ -4,6 +4,8 @@ namespace StationKit.Motion.Leadshine;
 /// 一根軸的一次狀態讀取結果，不可變。
 /// <see cref="Cycle"/> 是讀取<b>開始時</b>的週期號：判斷快照是否晚於某條指令，必須按開始時間，
 /// 不能按發佈時間（見 docs/design/central-polling.md 4.1）。
+/// <see cref="AlarmDetail"/>：ALM 有效時輪詢順帶讀出的報警描述（例如總線驅動器錯誤碼），
+/// 讓 GetStatus 在報警時也不需要調用 DLL。
 /// </summary>
 public sealed record LeadshineAxisSnapshot(
     long Cycle,
@@ -13,7 +15,8 @@ public sealed record LeadshineAxisSnapshot(
     uint Io,
     short Done,
     short PositionResult,
-    short FeedbackResult)
+    short FeedbackResult,
+    string? AlarmDetail = null)
 {
     public bool ReadFailed => PositionResult != 0 || FeedbackResult != 0 || Done is not (0 or 1);
 

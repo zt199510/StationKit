@@ -143,6 +143,114 @@ public sealed class LeadshineStatusPollerTests : IDisposable
         Assert.False(controller.Poller.IsRunning);
     }
 
+    [Fact]
+    public async Task 下發後的舊快照即使顯示已停止_也不能當作到位()
+    {
+        using var axis = CreateAxis(0);
+        await EnableWithOneCycleAsync(axis);
+        // 再讀一輪，讓運動前檢查不需要等待，下發立即發生
+        _poller.RefreshOnce();
+        Assert.Equal(1, _poller.GetSnapshot(0)!.Done);
+
+        // 不刷新：快照仍是下發前的「已停止」，沒有圍欄就會被誤判為到位
+        var move = axis.MoveAbsoluteAsync(10, new MotionProfile(100, 1000, 500));
+        await Task.Delay(20);
+        Assert.False(move.IsCompleted);
+        Assert.Contains("dmc_pmove_unit", _api.Calls);
+
+        await PumpAsync(move);
+        Assert.Equal(10, _api.Position);
+    }
+
+    [Fact]
+    public async Task 復位後立即使能_等新一輪快照_不被復位前的報警快照擋住()
+    {
+        using var axis = CreateAxis(0);
+        _api.IoStatus = 1;
+        _poller.RefreshOnce();
+        await axis.ResetAlarmAsync();
+
+        var enable = axis.EnableAsync();
+        await Task.Delay(20);
+        Assert.False(enable.IsCompleted);
+
+        await PumpAsync(enable);
+        Assert.Contains("nmc_set_axis_enable", _api.Calls);
+    }
+
+    [Fact]
+    public void 報警詳情由輪詢讀取_GetStatus不再調用錯誤碼函數()
+    {
+        using var axis = CreateAxis(0);
+        _api.IoStatus = 1;
+        _api.AxisErrorCode = 0x7380;
+        _poller.RefreshOnce();
+        Assert.Equal(1, _api.ReadCount("nmc_get_axis_errcode"));
+
+        var status = axis.GetStatus();
+        axis.GetStatus();
+
+        Assert.Equal(AxisState.Alarm, status.State);
+        Assert.Contains("0x7380", status.AlarmReason, StringComparison.Ordinal);
+        Assert.Equal(1, _api.ReadCount("nmc_get_axis_errcode"));
+    }
+
+    [Fact]
+    public async Task 等待週期時取消_已下發的運動先停軸再拋出取消()
+    {
+        using var axis = CreateAxis(0);
+        await EnableWithOneCycleAsync(axis);
+        _poller.RefreshOnce();
+        using var cts = new CancellationTokenSource();
+
+        var move = axis.MoveAbsoluteAsync(10, new MotionProfile(100, 1000, 500), cts.Token);
+        Assert.Equal("dmc_pmove_unit", _api.Calls[^1]);
+        await cts.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => PumpAsync(move));
+
+        Assert.Equal("dmc_stop", _api.Calls[^1]);
+    }
+
+    [Fact]
+    public async Task 運動前等新快照時取消_不下發運動也不停軸()
+    {
+        using var axis = CreateAxis(0);
+        await EnableWithOneCycleAsync(axis);
+        using var cts = new CancellationTokenSource();
+
+        // 使能後還沒有新一輪快照，運動前檢查在等
+        var move = axis.MoveAbsoluteAsync(10, new MotionProfile(100, 1000, 500), cts.Token);
+        await cts.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => move);
+
+        Assert.Equal(["nmc_set_axis_enable"], _api.Calls);
+    }
+
+    /// <summary>
+    /// 使能並且只推進一輪輪詢：新軸沒有快照，使能等到這一輪才繼續。
+    /// 之後不會再有新週期，最新快照不晚於使能的圍欄，測試前置狀態是確定的。
+    /// </summary>
+    private async Task EnableWithOneCycleAsync(DmcAxis axis)
+    {
+        var enable = axis.EnableAsync();
+        _poller.RefreshOnce();
+        await enable;
+    }
+
+    /// <summary>手動推動輪詢直到任務結束：每輪之間讓出時間，便於斷言「沒有新週期就不前進」。</summary>
+    private async Task PumpAsync(Task task)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (!task.IsCompleted)
+        {
+            Assert.True(DateTime.UtcNow < deadline, "等待任務超時");
+            _poller.RefreshOnce();
+            await Task.Delay(1);
+        }
+
+        await task;
+    }
+
     private DmcAxis CreateAxis(ushort axisNo, LeadshineFeedback feedback = LeadshineFeedback.None) =>
         new(_api, Options(axisNo) with { Feedback = feedback }, _poller, log: _log.Add);
 

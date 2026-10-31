@@ -85,7 +85,7 @@ internal sealed class FakeSmcNativeApi() : FakeLeadshineMotionApi("smc"), ISmcNa
 
     public short GetHomeResult(ushort connectNo, ushort axisNo, out ushort state)
     {
-        state = TakeHomeResult();
+        state = CurrentHomeResult();
         return 0;
     }
 

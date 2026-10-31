@@ -25,7 +25,12 @@ public sealed class DmcAxisTests : IDisposable
     private readonly LeadshineStatusPoller _poller;
     private readonly List<string> _log = [];
 
-    public DmcAxisTests() => _poller = new LeadshineStatusPoller(_api, 0, "DMC");
+    public DmcAxisTests()
+    {
+        // 軸的等待都按輪詢週期推進，測試裡讓輪詢器在後台以 1 ms 週期運行
+        _poller = new LeadshineStatusPoller(_api, 0, "DMC");
+        _poller.Start(TimeSpan.FromMilliseconds(1));
+    }
 
     public void Dispose() => _poller.Dispose();
 
@@ -49,7 +54,6 @@ public sealed class DmcAxisTests : IDisposable
         Feedback = LeadshineFeedback.None,
         HomeProfile = new DmcHomeProfile(Mode: 17, LowVelocity: 5, HighVelocity: 20, AccelerationTime: 0.1,
             DecelerationTime: 0.1, Offset: 0),
-        PollInterval = TimeSpan.FromMilliseconds(1),
         MotionTimeout = motionTimeout ?? TimeSpan.FromSeconds(5),
     };
 
