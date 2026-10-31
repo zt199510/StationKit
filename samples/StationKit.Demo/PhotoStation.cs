@@ -1,3 +1,4 @@
+using StationKit.Abstractions.Io;
 using StationKit.Abstractions.Motion;
 using StationKit.Alarms;
 using StationKit.Stations;
@@ -5,9 +6,10 @@ using StationKit.Stations;
 namespace StationKit.Demo;
 
 /// <summary>
-/// 一個典型的「拍照定位 → 加工 → 回上料位」工站。拍照段需要獨佔共用相機。
+/// 一個典型的「拍照定位 → 加工 → 回上料位 → 氣缸上料」工站。拍照段需要獨佔共用相機。
 /// </summary>
-internal sealed class PhotoStation(string name, IAxis x, ResourceArbiter arbiter, AlarmCenter alarms, Action<string> log)
+internal sealed class PhotoStation(string name, IAxis x, Cylinder loader, ResourceArbiter arbiter, AlarmCenter alarms,
+    Action<string> log)
     : Station(name, alarms)
 {
     public const string Camera = "相機";
@@ -42,7 +44,9 @@ internal sealed class PhotoStation(string name, IAxis x, ResourceArbiter arbiter
 
         await Task.Delay(300, token);
         await x.MoveAbsoluteAsync(LoadPosition, Fast, token);
-        log($"{Name} 循環 {cycle} 完成");
+        await loader.ExtendAsync(token);
+        await loader.RetractAsync(token);
+        log($"{Name} 循環 {cycle} 完成（{loader.Name}已上料）");
     }
 
     protected override async Task OnFaultedAsync(Exception exception)
