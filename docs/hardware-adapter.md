@@ -83,6 +83,30 @@ await z.HomeAsync();                      // homemode / 回零速度 / 原點電
 
 `LTDMC.dll`、`LTSMC.dll` 需要隨程序部署到輸出目錄，本倉庫不分發。
 
+## 狀態輪詢
+
+每張卡一個 `LeadshineStatusPoller`，由控制器創建：`Open()` 成功後啟動，`Close()` 時先停止再斷開。
+一個專用線程逐軸讀取 指令位置 / 編碼器 / IO / `check_done`，生成快照；軸的 `GetStatus()` 只讀快照，**不調 DLL**。
+同一張卡的所有 DLL 調用（輪詢、運動指令、參數讀寫）經過同一把卡鎖串行。設計說明見 [design/central-polling.md](design/central-polling.md)。
+
+```csharp
+var controller = new DmcController(api, cardNo: 0, ipAddress: "192.168.5.11", log: logger.Info,
+    pollPeriod: TimeSpan.FromMilliseconds(5),        // 默認 5 ms，上機後按統計日誌調整
+    staleTimeout: TimeSpan.FromMilliseconds(100));   // 默認 100 ms，至少為週期的 3 倍
+controller.Poller.StatsInterval = TimeSpan.FromSeconds(10);   // 週期統計日誌間隔，Open 之前設置
+```
+
+| 行為 | 說明 |
+|---|---|
+| 下發後的等待 | 只接受下發之後才開始讀取的快照（週期號大於圍欄），舊的「已停止」不會被當成到位 |
+| 快照過期 | 超過 `staleTimeout` 未更新：`GetStatus()` 返回 `Alarm`（位置保留最後讀到的值）；等待中的運動先停軸再報故障；不會下發新運動 |
+| 單軸讀取異常 | 只記一次 `[報警]`，恢復時記一次；其他軸照常讀；持續失敗表現為該軸快照過期 |
+| 週期統計 | `Cycles / AvgMs / MaxMs / MaxGapMs / Overruns`；有讀取超週期時以 `[警告]` 輸出 |
+| 計時精度 | Windows 下運行期間 `timeBeginPeriod(1)`，停止時恢復 |
+
+直接構造軸時（不經過控制器）需要傳入同一張卡的輪詢器：`new DmcAxis(api, options, controller.Poller)`。
+原來每根軸的 `PollInterval` 已移除，週期由輪詢器統一決定。
+
 ## 結構
 
 | 文件 | 職責 |

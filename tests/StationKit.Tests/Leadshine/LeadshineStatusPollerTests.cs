@@ -195,6 +195,29 @@ public sealed class LeadshineStatusPollerTests : IDisposable
     }
 
     [Fact]
+    public async Task 輪詢正在讀其他軸時_停止不用等整輪結束()
+    {
+        // 卡鎖只在讀單根軸時持有：一輪 4 根軸 × 3 個值 × 30 ms = 360 ms，停止最多等一根軸（90 ms）
+        var axes = Enumerable.Range(0, 4).Select(i => CreateAxis((ushort)i)).ToList();
+        try
+        {
+            _api.ReadDuration = TimeSpan.FromMilliseconds(30);
+            var round = Task.Run(_poller.RefreshOnce);
+            await WaitUntilAsync(() => _api.TotalReads > 0);
+
+            await axes[3].StopAsync();
+
+            Assert.False(round.IsCompleted);
+            Assert.Equal("dmc_stop", _api.Calls[^1]);
+            await round;
+        }
+        finally
+        {
+            axes.ForEach(axis => axis.Dispose());
+        }
+    }
+
+    [Fact]
     public void 控制器連接成功後啟動輪詢_斷開前停止()
     {
         var controller = new DmcController(_api, 0, "192.168.5.11", pollPeriod: TimeSpan.FromMilliseconds(1));

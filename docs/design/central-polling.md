@@ -1,6 +1,7 @@
 # 設計提案：雷賽軸集中輪詢
 
-> **狀態**：提案，未實現。按第 7 節分步實現；第 8 節已確定 DLL 調用全部串行。
+> **狀態**：已按第 7 節分 5 步實現，單元測試通過，**尚未在實機上驗證**。第 8 節已確定 DLL 調用全部串行。
+> 實現與提案的差異見第 9 節；使用方法見 [hardware-adapter.md](../hardware-adapter.md#狀態輪詢)。
 
 ## 1. 背景與問題
 
@@ -41,7 +42,7 @@ GetStatus()   WaitUntil…    GetStatus()
 |---|---|
 | `LeadshineCardGate`（新） | 每卡一把鎖，所有 DLL 調用經過它。輪詢只在**讀單根軸**時持有，不是整個週期：`stop` 最多等一根軸讀完就能插入 |
 | `LeadshineAxisSnapshot`（新） | 不可變 record：`Cycle`、`Command`、`Feedback`、`Io`、`Done`、各讀取的返回碼、`Timestamp` |
-| `LeadshineStatusPoller`（新） | 每卡一個。`RefreshOnce()`（同步讀一輪，測試直接調用）、`Start/Stop`、`TryGetSnapshot(axis)`、`WaitNextCycleAsync(ct)`。後台循環只是反覆調用 `RefreshOnce()` |
+| `LeadshineStatusPoller`（新） | 每卡一個。`RefreshOnce()`（同步讀一輪，測試直接調用）、`Start/Stop`、`GetSnapshot(axis)`、`WaitForCycleAsync(afterCycle, timeout, ct)`。後台循環只是反覆調用 `RefreshOnce()` |
 | `LeadshineAxisBase` | 構造時注入 poller；`GetStatus()` 讀快照，**不再調 DLL**；等待循環改為等下一週期，不再 `Task.Delay` |
 | `DmcController` / `SmcController` | `Open` 後啟動 poller、`Close` 前停止；`CreateAxis` 時註冊軸 |
 | `LeadshineAxisOptions.PollInterval` | 移到 poller，變成每卡一個的週期 |
@@ -85,12 +86,12 @@ GetStatus()   WaitUntil…    GetStatus()
 
 **新增測試**（用 `RefreshOnce()` 手動推進，結果確定）：
 
-- [ ] 下發後只接受新週期的快照：舊快照中的 `check_done == 1` 不算到位（4.1）
-- [ ] 輪詢停止超過 `StaleTimeout`：狀態為 `Alarm`，等待中的運動報故障（4.2）
-- [ ] `GetStatus()` 不產生 DLL 調用：調用前後 `Calls.Count` 不變
-- [ ] 一輪輪詢中，每根軸每個函數各讀一次
-- [ ] 一根軸讀取失敗，不影響其他軸的快照
-- [ ] 輪詢正在讀其他軸時，`stop` 不用等整輪結束
+- [x] 下發後只接受新週期的快照：舊快照中的 `check_done == 1` 不算到位（4.1）
+- [x] 輪詢停止超過 `StaleTimeout`：狀態為 `Alarm`，等待中的運動報故障（4.2）
+- [x] `GetStatus()` 不產生 DLL 調用：調用前後 `Calls.Count` 不變
+- [x] 一輪輪詢中，每根軸每個函數各讀一次
+- [x] 一根軸讀取失敗，不影響其他軸的快照
+- [x] 輪詢正在讀其他軸時，`stop` 不用等整輪結束
 
 ## 7. 實施步驟
 
@@ -109,3 +110,19 @@ GetStatus()   WaitUntil…    GetStatus()
 | 雷賽 DLL 是否線程安全 | 確定安全：`CardGate` 只保證單軸讀取的一致性，下發不與輪詢互斥；不確定：全部串行 | **已決定：全部串行**（線程安全性未經確認，以穩妥為先；實機驗證後可再放寬） |
 | 輪詢週期 | — | SMC 以太網先定 5 ms，上機後按日誌實測調整 |
 | 高精度計時 | `timeBeginPeriod(1)` + `Thread.Sleep(1)`（影響整個進程）；專用線程自旋加短睡眠（CPU 佔用更高） | 前者，視工控機上的其他程序而定 |
+
+## 9. 實現記錄
+
+| 步驟 | 提交 | 與提案的差異 |
+|---|---|---|
+| 1 卡鎖 | `0a2258f` | 用 `System.Threading.Lock`；鎖順序固定為「發令鎖 → 卡鎖」，卡鎖不跨 `await` |
+| 2 輪詢器與快照 | `f1ea681` | 無快照時 `GetStatus()` 返回 `Alarm`「尚無狀態數據」 |
+| 3 週期號隔離 | `acbc33c` | 除運動等待外，運動前檢查、使能前報警檢查也要求快照晚於上一條指令（復位後立即使能不會被舊報警擋住）；ALM 有效時輪詢順帶讀取驅動器錯誤碼存入快照，`GetStatus()` 完全不調 DLL |
+| 4 過期檢測 | `b32febe` | 等待先判斷過期再判斷圍欄。順帶修正：某軸一直讀取失敗時週期照常完成但快照不更新，原先的等待會卡死，現在按過期報故障；輪詢週期必須不超過過期時間的 1/3，構造控制器時檢查 |
+| 5 專用線程 | `1b57f8e` | 線程優先級 AboveNormal；`Stop` 最多等 1 s，DLL 卡死時 `Close` 不跟著卡死；統計增加 `MaxGapMs`（相鄰兩輪開始的間隔），用來發現計時精度不足 |
+
+上機時要確認：
+
+- 統計日誌裡 `AvgMs` / `MaxMs`（一輪讀取耗時）和 `MaxGapMs`，據此確定週期；`Overruns` 應為 0
+- `timeBeginPeriod` 是否生效（`MaxGapMs` 接近週期而不是 15.6 ms）。CI 只在 Linux 上運行，Windows 分支未經測試
+- 卡鎖全部串行後，`stop` 的實際延遲（最多等一根軸讀完）
