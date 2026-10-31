@@ -92,8 +92,11 @@ internal sealed class FakeSmcNativeApi() : FakeLeadshineMotionApi("smc"), ISmcNa
     public short WriteErcPin(ushort connectNo, ushort axisNo, ushort level) =>
         WriteReset("smc_write_erc_pin", axisNo, level);
 
-    public short WriteOutputBit(ushort connectNo, ushort bitNo, ushort level) =>
-        WriteReset("smc_write_outbit", bitNo, level);
+    public override short WriteOutputBit(ushort cardNo, ushort bitNo, ushort level)
+    {
+        SetOutputBit(bitNo, level);
+        return WriteReset("smc_write_outbit", bitNo, level);
+    }
 
     private short WriteReset(string apiName, ushort index, ushort level)
     {

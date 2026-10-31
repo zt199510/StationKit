@@ -198,7 +198,7 @@ internal abstract class FakeLeadshineMotionApi(string prefix) : ILeadshineMotion
             position = Position;
         }
 
-        return 0;
+        return ReturnCodes.TryGetValue($"{prefix}_get_position_unit", out var code) ? code : (short)0;
     }
 
     /// <summary>模擬 set_position_unit 調用成功但沒有生效。</summary>
@@ -247,6 +247,66 @@ internal abstract class FakeLeadshineMotionApi(string prefix) : ILeadshineMotion
         CountRead($"{prefix}_axis_io_status", axisNo);
         status = IoStatus;
         return 0;
+    }
+
+    /// <summary>通用輸入端口的電平，測試直接設置。</summary>
+    public uint[] InputPorts { get; } = new uint[4];
+
+    /// <summary>通用輸出端口的實際電平。</summary>
+    public uint[] OutputPorts { get; } = new uint[4];
+
+    /// <summary>模擬輸出口卡死：寫入返回成功但電平不變。</summary>
+    public HashSet<ushort> StuckOutputBits { get; } = [];
+
+    /// <summary>模擬讀 IO 端口時 DLL 拋異常。</summary>
+    public bool ThrowOnIoRead { get; set; }
+
+    public short ReadInputPort(ushort cardNo, ushort portNo, out uint value)
+    {
+        CountIoRead($"{prefix}_read_inport");
+        value = InputPorts[portNo];
+        return 0;
+    }
+
+    public short ReadOutputPort(ushort cardNo, ushort portNo, out uint value)
+    {
+        CountIoRead($"{prefix}_read_outport");
+        lock (_sync)
+        {
+            value = OutputPorts[portNo];
+        }
+
+        return 0;
+    }
+
+    public virtual short WriteOutputBit(ushort cardNo, ushort bitNo, ushort level)
+    {
+        SetOutputBit(bitNo, level);
+        return Record($"{prefix}_write_outbit");
+    }
+
+    protected void SetOutputBit(ushort bitNo, ushort level)
+    {
+        if (StuckOutputBits.Contains(bitNo))
+        {
+            return;
+        }
+
+        lock (_sync)
+        {
+            var mask = 1u << (bitNo % 32);
+            OutputPorts[bitNo / 32] = level == 0 ? OutputPorts[bitNo / 32] & ~mask : OutputPorts[bitNo / 32] | mask;
+        }
+    }
+
+    private void CountIoRead(string apiName)
+    {
+        if (ThrowOnIoRead)
+        {
+            throw new InvalidOperationException($"模擬通訊中斷：{apiName}");
+        }
+
+        _reads.AddOrUpdate(apiName, 1, (_, count) => count + 1);
     }
 
     protected void CountRead(string apiName, ushort axisNo)

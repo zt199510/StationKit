@@ -125,6 +125,22 @@ public sealed class DmcNativeApi : IDmcNativeApi
         return 0;
     }
 
+    public short ReadInputPort(ushort cardNo, ushort portNo, out uint value)
+    {
+        // dmc_read_inport 直接返回端口值，沒有錯誤碼
+        value = NativeMethods.dmc_read_inport(cardNo, portNo);
+        return 0;
+    }
+
+    public short ReadOutputPort(ushort cardNo, ushort portNo, out uint value)
+    {
+        value = NativeMethods.dmc_read_outport(cardNo, portNo);
+        return 0;
+    }
+
+    public short WriteOutputBit(ushort cardNo, ushort bitNo, ushort level) =>
+        NativeMethods.dmc_write_outbit(cardNo, bitNo, level);
+
     public short SetHomeProfile(ushort cardNo, ushort axisNo, DmcHomeProfile profile) =>
         NativeMethods.nmc_set_home_profile(cardNo, axisNo, profile.Mode, profile.LowVelocity, profile.HighVelocity,
             profile.AccelerationTime, profile.DecelerationTime, profile.Offset);

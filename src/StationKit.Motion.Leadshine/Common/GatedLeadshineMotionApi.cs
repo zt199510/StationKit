@@ -108,6 +108,25 @@ internal abstract class GatedLeadshineMotionApi<TApi>(TApi inner, LeadshineCardG
         }
     }
 
+    public short ReadInputPort(ushort cardNo, ushort portNo, out uint value)
+    {
+        lock (Sync)
+        {
+            return Inner.ReadInputPort(cardNo, portNo, out value);
+        }
+    }
+
+    public short ReadOutputPort(ushort cardNo, ushort portNo, out uint value)
+    {
+        lock (Sync)
+        {
+            return Inner.ReadOutputPort(cardNo, portNo, out value);
+        }
+    }
+
+    public short WriteOutputBit(ushort cardNo, ushort bitNo, ushort level) =>
+        Locked(() => Inner.WriteOutputBit(cardNo, bitNo, level));
+
     protected short Locked(Func<short> call)
     {
         lock (Sync)

@@ -115,6 +115,13 @@ internal static class NativeMethods
     [DllImport(Dll, CallingConvention = CallingConvention.StdCall)]
     internal static extern uint smc_axis_io_status(ushort ConnectNo, ushort axis);
 
+    //--------------------- 通用 IO ---------------------
+    [DllImport(Dll, CallingConvention = CallingConvention.StdCall)]
+    internal static extern uint smc_read_inport(ushort ConnectNo, ushort portno);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.StdCall)]
+    internal static extern uint smc_read_outport(ushort ConnectNo, ushort portno);
+
     //--------------------- 回零 ---------------------
     [DllImport(Dll, CallingConvention = CallingConvention.StdCall)]
     internal static extern short smc_set_homemode(ushort ConnectNo, ushort axis, ushort home_dir, double vel_mode,

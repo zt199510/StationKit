@@ -87,4 +87,17 @@ public interface ILeadshineMotionApi
     short SetFeedbackPosition(ushort cardNo, ushort axisNo, double position);
 
     short ReadAxisIoStatus(ushort cardNo, ushort axisNo, out uint status);
+
+    /// <summary>
+    /// 讀通用輸入端口（32 位，第 n 位對應端口內第 n 個輸入，值為電平）。
+    /// read_inport 直接返回端口值，沒有錯誤碼：通訊失敗與「全部低電平」無法區分，
+    /// 由輪詢器在同一次持鎖內加讀一個有錯誤碼的函數作探針（docs/design/digital-io.md 4.2）。
+    /// </summary>
+    short ReadInputPort(ushort cardNo, ushort portNo, out uint value);
+
+    /// <summary>讀通用輸出端口的實際電平，用於寫入後回讀核對。同樣沒有錯誤碼。</summary>
+    short ReadOutputPort(ushort cardNo, ushort portNo, out uint value);
+
+    /// <summary>寫一個通用輸出位的電平（0/1）。</summary>
+    short WriteOutputBit(ushort cardNo, ushort bitNo, ushort level);
 }

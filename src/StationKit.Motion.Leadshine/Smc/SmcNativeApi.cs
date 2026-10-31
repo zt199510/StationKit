@@ -87,8 +87,8 @@ public sealed class SmcNativeApi : ISmcNativeApi
     public short WriteErcPin(ushort connectNo, ushort axisNo, ushort level) =>
         NativeMethods.smc_write_erc_pin(connectNo, axisNo, level);
 
-    public short WriteOutputBit(ushort connectNo, ushort bitNo, ushort level) =>
-        NativeMethods.smc_write_outbit(connectNo, bitNo, level);
+    public short WriteOutputBit(ushort cardNo, ushort bitNo, ushort level) =>
+        NativeMethods.smc_write_outbit(cardNo, bitNo, level);
 
     public short SetInpMode(ushort cardNo, ushort axisNo, LeadshineInpMode mode) =>
         NativeMethods.smc_set_inp_mode(cardNo, axisNo, ToEnable(mode.Enabled), mode.Logic);
@@ -136,6 +136,19 @@ public sealed class SmcNativeApi : ISmcNativeApi
     {
         // smc_axis_io_status 直接返回狀態字，沒有錯誤碼
         status = NativeMethods.smc_axis_io_status(cardNo, axisNo);
+        return 0;
+    }
+
+    public short ReadInputPort(ushort cardNo, ushort portNo, out uint value)
+    {
+        // smc_read_inport 直接返回端口值，沒有錯誤碼
+        value = NativeMethods.smc_read_inport(cardNo, portNo);
+        return 0;
+    }
+
+    public short ReadOutputPort(ushort cardNo, ushort portNo, out uint value)
+    {
+        value = NativeMethods.smc_read_outport(cardNo, portNo);
         return 0;
     }
 

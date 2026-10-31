@@ -65,6 +65,4 @@ public interface ISmcNativeApi : ILeadshineMotionApi
     short GetHomeResult(ushort connectNo, ushort axisNo, out ushort state);
 
     short WriteErcPin(ushort connectNo, ushort axisNo, ushort level);
-
-    short WriteOutputBit(ushort connectNo, ushort bitNo, ushort level);
 }

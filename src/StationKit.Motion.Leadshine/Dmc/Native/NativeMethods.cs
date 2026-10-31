@@ -103,6 +103,16 @@ internal static class NativeMethods
     [DllImport(Dll, CallingConvention = CallingConvention.StdCall)]
     internal static extern uint dmc_axis_io_status(ushort CardNo, ushort axis);
 
+    //--------------------- 通用 IO ---------------------
+    [DllImport(Dll, CallingConvention = CallingConvention.StdCall)]
+    internal static extern uint dmc_read_inport(ushort CardNo, ushort portno);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.StdCall)]
+    internal static extern uint dmc_read_outport(ushort CardNo, ushort portno);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.StdCall)]
+    internal static extern short dmc_write_outbit(ushort CardNo, ushort bitno, ushort on_off);
+
     //--------------------- 回零 ---------------------
     [DllImport(Dll, CallingConvention = CallingConvention.StdCall)]
     internal static extern short nmc_set_home_profile(ushort CardNo, ushort axis, ushort home_mode, double Low_Vel,

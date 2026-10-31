@@ -92,7 +92,4 @@ internal sealed class GatedSmcNativeApi(ISmcNativeApi inner, LeadshineCardGate g
 
     public short WriteErcPin(ushort connectNo, ushort axisNo, ushort level) =>
         Locked(() => Inner.WriteErcPin(connectNo, axisNo, level));
-
-    public short WriteOutputBit(ushort connectNo, ushort bitNo, ushort level) =>
-        Locked(() => Inner.WriteOutputBit(connectNo, bitNo, level));
 }

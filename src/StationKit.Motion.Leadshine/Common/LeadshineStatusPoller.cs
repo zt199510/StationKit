@@ -43,6 +43,8 @@ public sealed class LeadshineStatusPoller : IDisposable
     private Thread? _thread;
     private TimeSpan _statsInterval = TimeSpan.FromSeconds(10);
     private volatile string? _fault;
+    private (ushort Inputs, ushort Outputs) _ioPorts;
+    private LeadshineIoSnapshot? _ioSnapshot;
 
     /// <param name="api">原始 SDK，輪詢器內部用 <see cref="Gate"/> 加鎖調用。</param>
     /// <param name="family">日誌裡的系列名，DMC 或 SMC。</param>
@@ -130,6 +132,12 @@ public sealed class LeadshineStatusPoller : IDisposable
                 }
             }
 
+            if (!RefreshIo(cycle))
+            {
+                WakeWaiters();
+                return;
+            }
+
             // 先更新完成號，再喚醒等待方：等待方被喚醒後一定能看到新的完成號
             Interlocked.Exchange(ref _completedCycle, cycle);
             WakeWaiters();
@@ -189,6 +197,22 @@ public sealed class LeadshineStatusPoller : IDisposable
     /// <summary>最新快照；這根軸還沒被讀過時返回 null。</summary>
     public LeadshineAxisSnapshot? GetSnapshot(ushort axisNo) =>
         _snapshots.TryGetValue(axisNo, out var snapshot) ? snapshot : null;
+
+    /// <summary>
+    /// 每輪輪詢讀取的通用 IO 端口數（每個端口 32 位）。默認都為 0，不讀 IO。
+    /// 按端口讀而不是按位讀：一輪只多幾次調用，以太網卡上很重要。
+    /// </summary>
+    public void ConfigureIo(ushort inputPorts, ushort outputPorts)
+    {
+        lock (_refreshSync)
+        {
+            _ioPorts = (inputPorts, outputPorts);
+            _ioSnapshot = null;
+        }
+    }
+
+    /// <summary>最新的 IO 快照；未配置 IO 或還沒讀過時返回 null。</summary>
+    public LeadshineIoSnapshot? GetIoSnapshot() => Volatile.Read(ref _ioSnapshot);
 
     /// <summary>啟動後台輪詢。重複調用無效。</summary>
     public void Start(TimeSpan period)
@@ -375,13 +399,13 @@ public sealed class LeadshineStatusPoller : IDisposable
         }
         catch (Exception ex)
         {
-            EnterFault(axis.AxisNo, $"{ex.GetType().Name}: {ex.Message}");
+            EnterFault($"軸 {axis.AxisNo}", $"AxisIndex={axis.AxisNo}, ", $"{ex.GetType().Name}: {ex.Message}");
             return false;
         }
 
         if (snapshot.ReadFailed)
         {
-            EnterFault(axis.AxisNo, snapshot.DescribeReadFailure());
+            EnterFault($"軸 {axis.AxisNo}", $"AxisIndex={axis.AxisNo}, ", snapshot.DescribeReadFailure());
             return false;
         }
 
@@ -390,13 +414,65 @@ public sealed class LeadshineStatusPoller : IDisposable
     }
 
     /// <summary>
+    /// 讀通用 IO 端口。read_inport / read_outport 沒有錯誤碼，讀完在同一次持鎖內讀軸 0 的指令位置作探針：
+    /// 探針失敗說明這次讀到的端口值不可信（docs/design/digital-io.md 4.2）。讀取失敗時卡進入故障，返回 false。
+    /// </summary>
+    private bool RefreshIo(long cycle)
+    {
+        var (inputPorts, outputPorts) = _ioPorts;
+        if (inputPorts == 0 && outputPorts == 0)
+        {
+            return true;
+        }
+
+        var inputs = new uint[inputPorts];
+        var outputs = new uint[outputPorts];
+        short probe;
+        long timestamp;
+        try
+        {
+            lock (Gate.Sync)
+            {
+                timestamp = _time.GetTimestamp();
+                for (ushort port = 0; port < inputPorts; port++)
+                {
+                    _api.ReadInputPort(CardNo, port, out inputs[port]);
+                }
+
+                for (ushort port = 0; port < outputPorts; port++)
+                {
+                    _api.ReadOutputPort(CardNo, port, out outputs[port]);
+                }
+
+                probe = _api.ReadPosition(CardNo, 0, out _);
+            }
+        }
+        catch (Exception ex)
+        {
+            EnterFault("IO", "Target=IO, ", $"{ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
+
+        if (probe != 0)
+        {
+            EnterFault("IO", "Target=IO, ", $"通訊探針 get_position_unit={probe}");
+            return false;
+        }
+
+        Volatile.Write(ref _ioSnapshot, new LeadshineIoSnapshot(cycle, timestamp, inputs, outputs));
+        return true;
+    }
+
+    /// <summary>
     /// 讀取失敗說明通訊或卡本身出了問題，同一張卡上其他軸的數據也不可信：
     /// 停止讀取，本卡所有軸禁止操作，等人工排查後復位。
     /// </summary>
-    private void EnterFault(ushort axisNo, string detail)
+    /// <param name="target">讀取失敗的對象，例如「軸 1」「IO」。</param>
+    /// <param name="logFields">日誌裡附加的結構化字段，例如「AxisIndex=1, 」「Target=IO, 」。</param>
+    private void EnterFault(string target, string logFields, string detail)
     {
-        _fault = $"卡{CardNo} 軸 {axisNo} 狀態讀取失敗（{detail}）";
-        Log($"AxisIndex={axisNo}, Stage=Poll, 狀態讀取失敗，停止輪詢，本卡所有軸禁止操作：{detail}", "[報警] ");
+        _fault = $"卡{CardNo} {target} 狀態讀取失敗（{detail}）";
+        Log($"{logFields}Stage=Poll, 狀態讀取失敗，停止輪詢，本卡所有軸和 IO 禁止操作：{detail}", "[報警] ");
         foreach (var axis in Volatile.Read(ref _axes))
         {
             axis.OnCardFault?.Invoke();
