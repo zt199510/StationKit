@@ -1,7 +1,7 @@
 namespace StationKit.Motion.Dmc;
 
 /// <summary>
-/// 单根 DMC 总线轴的配置。回零参数没有默认值：回零方式选错会直接撞机，必须由现场明确填写。
+/// 單根 DMC 總線軸的配置。回零參數沒有默認值：回零方式選錯會直接撞機，必須由現場明確填寫。
 /// </summary>
 public sealed record DmcAxisOptions
 {
@@ -11,7 +11,7 @@ public sealed record DmcAxisOptions
 
     public required string Name { get; init; }
 
-    /// <summary>脉冲当量（脉冲/mm）。</summary>
+    /// <summary>脈衝當量（脈衝/mm）。</summary>
     public required double PulseEquivalent { get; init; }
 
     public required DmcHomeProfile HomeProfile { get; init; }
@@ -22,13 +22,13 @@ public sealed record DmcAxisOptions
     /// <summary>停止速度。</summary>
     public double StopVelocity { get; init; }
 
-    /// <summary>S 段时间（秒）。</summary>
+    /// <summary>S 段時間（秒）。</summary>
     public double STime { get; init; } = 0.01;
 
-    /// <summary>软限位计数源（dmc_set_softlimit_unit source_sel），取值含义以所用卡型手册为准，需实机确认。</summary>
+    /// <summary>軟限位計數源（dmc_set_softlimit_unit source_sel），取值含義以所用卡型手冊為準，需實機確認。</summary>
     public ushort SoftLimitSource { get; init; }
 
-    /// <summary>软限位触发后的动作（dmc_set_softlimit_unit SL_action），取值含义以所用卡型手册为准，需实机确认。</summary>
+    /// <summary>軟限位觸發後的動作（dmc_set_softlimit_unit SL_action），取值含義以所用卡型手冊為準，需實機確認。</summary>
     public ushort SoftLimitAction { get; init; }
 
     /// <summary>判定到位的位置容差（mm）。</summary>

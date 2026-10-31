@@ -3,14 +3,14 @@ namespace StationKit.Motion.Dmc;
 /// <summary>dmc_stop 的停止模式。</summary>
 public enum DmcStopMode : ushort
 {
-    /// <summary>减速停止。</summary>
+    /// <summary>減速停止。</summary>
     Decelerated = 0,
 
-    /// <summary>紧急停止。</summary>
+    /// <summary>緊急停止。</summary>
     Immediate = 1,
 }
 
-/// <summary>回零参数（对应 nmc_set_home_profile）。</summary>
+/// <summary>回零參數（對應 nmc_set_home_profile）。</summary>
 public readonly record struct DmcHomeProfile(
     ushort Mode,
     double LowVelocity,
@@ -19,12 +19,12 @@ public readonly record struct DmcHomeProfile(
     double DecelerationTime,
     double Offset);
 
-/// <summary>软限位参数（对应 dmc_set_softlimit_unit）。</summary>
+/// <summary>軟限位參數（對應 dmc_set_softlimit_unit）。</summary>
 public readonly record struct DmcSoftLimit(bool Enabled, ushort Source, ushort Action, double Negative, double Positive);
 
 /// <summary>
-/// 雷赛 DMC 原生接口。所有方法原样返回雷赛错误码（0 表示成功），不做任何判断，
-/// 判断和日志统一放在调用方。测试时用假实现记录调用顺序、注入返回码。
+/// 雷賽 DMC 原生接口。所有方法原樣返回雷賽錯誤碼（0 表示成功），不做任何判斷，
+/// 判斷和日誌統一放在調用方。測試時用假實現記錄調用順序、注入返回碼。
 /// </summary>
 public interface IDmcNativeApi
 {
@@ -40,7 +40,7 @@ public interface IDmcNativeApi
 
     short GetPulseEquivalent(ushort cardNo, ushort axisNo, out double value);
 
-    /// <summary>注意：雷赛用加减速时间（秒），不是加速度。</summary>
+    /// <summary>注意：雷賽用加減速時間（秒），不是加速度。</summary>
     short SetProfile(ushort cardNo, ushort axisNo, double minVelocity, double maxVelocity,
         double accelerationTime, double decelerationTime, double stopVelocity);
 
@@ -64,7 +64,7 @@ public interface IDmcNativeApi
 
     short MoveAbsolute(ushort cardNo, ushort axisNo, double position);
 
-    /// <summary>0 运动中，1 已停止；其他值视为非法状态。</summary>
+    /// <summary>0 運動中，1 已停止；其他值視為非法狀態。</summary>
     short CheckDone(ushort cardNo, ushort axisNo);
 
     short StopAxis(ushort cardNo, ushort axisNo, DmcStopMode mode);
@@ -81,6 +81,6 @@ public interface IDmcNativeApi
 
     short HomeMove(ushort cardNo, ushort axisNo);
 
-    /// <summary>回零结果：1 表示本次回零完成。</summary>
+    /// <summary>回零結果：1 表示本次回零完成。</summary>
     short GetHomeResult(ushort cardNo, ushort axisNo, out ushort state);
 }

@@ -43,21 +43,21 @@ public class DmcAxisTests
     }
 
     [Fact]
-    public async Task 绝对运动_按加减速时间设速度后下发_到位才完成()
+    public async Task 絕對運動_按加減速時間設速度後下發_到位才完成()
     {
         using var axis = await EnabledAxisAsync();
 
         await axis.MoveAbsoluteAsync(120, Profile);
 
         Assert.Equal(["nmc_set_axis_enable", "dmc_set_profile_unit", "dmc_pmove_unit"], _api.Calls);
-        // 雷赛用加减速时间：t = v / a
+        // 雷賽用加減速時間：t = v / a
         Assert.Equal((0, 100, 0.1, 0.2, 0), _api.LastProfile);
         Assert.Equal(120, axis.GetStatus().Position);
         Assert.Equal(AxisState.Idle, axis.GetStatus().State);
     }
 
     [Fact]
-    public async Task 下发前已取消_不调用dmc_pmove_unit()
+    public async Task 下發前已取消_不調用dmc_pmove_unit()
     {
         using var axis = await EnabledAxisAsync();
 
@@ -68,7 +68,7 @@ public class DmcAxisTests
     }
 
     [Fact]
-    public async Task 运动中取消_先减速停轴再抛出取消()
+    public async Task 運動中取消_先減速停軸再拋出取消()
     {
         _api.PollsPerMove = int.MaxValue;
         using var axis = await EnabledAxisAsync();
@@ -84,7 +84,7 @@ public class DmcAxisTests
     }
 
     [Fact]
-    public async Task 返回码非零_异常和日志带上卡号轴号函数名和返回码()
+    public async Task 返回碼非零_異常和日誌帶上卡號軸號函數名和返回碼()
     {
         _api.ReturnCodes["dmc_pmove_unit"] = 9;
         using var axis = await EnabledAxisAsync();
@@ -94,11 +94,11 @@ public class DmcAxisTests
         Assert.Equal("dmc_pmove_unit", ex.ApiName);
         Assert.Equal(9, ex.ReturnCode);
         Assert.Contains("CardId=0, AxisIndex=0, AxisName=X0, ApiName=dmc_pmove_unit, ReturnCode=9", ex.Message);
-        Assert.Contains(_log, line => line.StartsWith("[报警]", StringComparison.Ordinal) && line.Contains("ReturnCode=9"));
+        Assert.Contains(_log, line => line.StartsWith("[報警]", StringComparison.Ordinal) && line.Contains("ReturnCode=9"));
     }
 
     [Fact]
-    public async Task 运动中伺服报警_立即急停并报出驱动器错误码()
+    public async Task 運動中伺服報警_立即急停並報出驅動器錯誤碼()
     {
         _api.PollsPerMove = int.MaxValue;
         _api.AxisErrorCode = 0x7500;
@@ -109,12 +109,12 @@ public class DmcAxisTests
         _api.IoStatus = 1; // ALM
 
         var ex = await Assert.ThrowsAsync<MotionFaultException>(() => move);
-        Assert.Contains("伺服报警 ALM，驱动器错误码 0x7500", ex.Message);
+        Assert.Contains("伺服報警 ALM，驅動器錯誤碼 0x7500", ex.Message);
         Assert.Equal(DmcStopMode.Immediate, _api.LastStopMode);
     }
 
     [Fact]
-    public async Task 被外部停止未到位_报故障而不是当作完成()
+    public async Task 被外部停止未到位_報故障而不是當作完成()
     {
         _api.PollsPerMove = int.MaxValue;
         using var axis = await EnabledAxisAsync();
@@ -124,23 +124,23 @@ public class DmcAxisTests
         await axis.StopAsync();
 
         var ex = await Assert.ThrowsAsync<MotionFaultException>(() => move);
-        Assert.Contains("运动已停止但未到位：目标 120，实际 0", ex.Message);
+        Assert.Contains("運動已停止但未到位：目標 120，實際 0", ex.Message);
     }
 
     [Fact]
-    public async Task 运动超时_减速停止并报故障()
+    public async Task 運動超時_減速停止並報故障()
     {
         _api.PollsPerMove = int.MaxValue;
         using var axis = await EnabledAxisAsync(motionTimeout: TimeSpan.FromMilliseconds(50));
 
         var ex = await Assert.ThrowsAsync<MotionFaultException>(() => axis.MoveAbsoluteAsync(120, Profile));
 
-        Assert.Contains("超时", ex.Message);
+        Assert.Contains("超時", ex.Message);
         Assert.Contains("dmc_stop", _api.Calls);
     }
 
     [Fact]
-    public async Task 触发硬限位_报故障()
+    public async Task 觸發硬限位_報故障()
     {
         _api.PollsPerMove = int.MaxValue;
         using var axis = await EnabledAxisAsync();
@@ -154,7 +154,7 @@ public class DmcAxisTests
     }
 
     [Fact]
-    public async Task 报警中拒绝使能_不调用nmc_set_axis_enable()
+    public async Task 報警中拒絕使能_不調用nmc_set_axis_enable()
     {
         _api.IoStatus = 1;
         using var axis = CreateAxis();
@@ -165,7 +165,7 @@ public class DmcAxisTests
     }
 
     [Fact]
-    public async Task 回零_回读一致后下发_回零结果为1才算完成()
+    public async Task 回零_回讀一致後下發_回零結果為1才算完成()
     {
         using var axis = await EnabledAxisAsync();
         _api.Position = 37;
@@ -178,20 +178,20 @@ public class DmcAxisTests
     }
 
     [Fact]
-    public async Task 回零参数回读不一致_不下发回零()
+    public async Task 回零參數回讀不一致_不下發回零()
     {
         _api.HomeProfileReadback = p => p with { Mode = 35 };
         using var axis = await EnabledAxisAsync();
 
         var ex = await Assert.ThrowsAsync<DmcCallException>(() => axis.HomeAsync());
 
-        Assert.Contains("回读不一致", ex.Message);
+        Assert.Contains("回讀不一致", ex.Message);
         Assert.DoesNotContain("dmc_home_move", _api.Calls);
         Assert.False(axis.GetStatus().IsHomed);
     }
 
     [Fact]
-    public async Task 回零参数返回16088_按兼容码处理且以回读为准()
+    public async Task 回零參數返回16088_按兼容碼處理且以回讀為準()
     {
         _api.ReturnCodes["nmc_set_home_profile"] = 16088;
         using var axis = await EnabledAxisAsync();
@@ -203,7 +203,7 @@ public class DmcAxisTests
     }
 
     [Fact]
-    public async Task 复位报警后需要重新使能和回零()
+    public async Task 復位報警後需要重新使能和回零()
     {
         using var axis = await EnabledAxisAsync();
         await axis.HomeAsync();
@@ -218,7 +218,7 @@ public class DmcAxisTests
     }
 
     [Fact]
-    public void 脉冲当量回读不一致_抛出()
+    public void 脈衝當量回讀不一致_拋出()
     {
         _api.EquivReadback = 100;
         using var axis = CreateAxis();
@@ -230,7 +230,7 @@ public class DmcAxisTests
     }
 
     [Fact]
-    public async Task 安全初始化_急停和软限位写入回读一致后才使能()
+    public async Task 安全初始化_急停和軟限位寫入回讀一致後才使能()
     {
         using var x = CreateAxis(0);
         using var y = CreateAxis(1);
@@ -243,7 +243,7 @@ public class DmcAxisTests
     }
 
     [Fact]
-    public async Task 安全初始化_急停电平回读不一致时不使能任何轴()
+    public async Task 安全初始化_急停電平回讀不一致時不使能任何軸()
     {
         _api.EmergencyLogicReadback = _ => 1;
         using var x = CreateAxis();
@@ -255,7 +255,7 @@ public class DmcAxisTests
     }
 
     [Fact]
-    public async Task 启用急停但未指定电平_拒绝写入()
+    public async Task 啟用急停但未指定電平_拒絕寫入()
     {
         using var axis = CreateAxis();
 
@@ -271,7 +271,7 @@ public class DmcAxisTests
     [InlineData(0b0100_0000u, false, true, false, false)]
     [InlineData(0b1000_0100u, false, false, true, false)]
     [InlineData(0b0000_1000u, false, false, false, true)]
-    public void 轴IO状态字解析(uint raw, bool alarm, bool positive, bool negative, bool emergency)
+    public void 軸IO狀態字解析(uint raw, bool alarm, bool positive, bool negative, bool emergency)
     {
         var io = DmcAxisIo.Parse(raw);
 
@@ -282,7 +282,7 @@ public class DmcAxisTests
     }
 
     [Fact]
-    public void 控制卡连接_按关闭初始化以太网的顺序()
+    public void 控制卡連接_按關閉初始化以太網的順序()
     {
         var controller = new DmcController(_api, 0, "192.168.5.11");
 
@@ -295,7 +295,7 @@ public class DmcAxisTests
         var deadline = DateTime.UtcNow.AddSeconds(5);
         while (!_api.Calls.Contains(apiName))
         {
-            Assert.True(DateTime.UtcNow < deadline, $"等待 {apiName} 调用超时");
+            Assert.True(DateTime.UtcNow < deadline, $"等待 {apiName} 調用超時");
             await Task.Delay(1);
         }
     }

@@ -3,8 +3,8 @@ using StationKit.Motion.Dmc;
 namespace StationKit.Tests.Dmc;
 
 /// <summary>
-/// 假 DMC：记录调用顺序，可注入返回码、IO 状态、回读偏差；
-/// 运动在若干次 dmc_check_done 轮询后到位，被 dmc_stop 打断时停在原地。
+/// 假 DMC：記錄調用順序，可注入返回碼、IO 狀態、回讀偏差；
+/// 運動在若干次 dmc_check_done 輪詢後到位，被 dmc_stop 打斷時停在原地。
 /// </summary>
 internal sealed class FakeDmcNativeApi : IDmcNativeApi
 {
@@ -19,7 +19,7 @@ internal sealed class FakeDmcNativeApi : IDmcNativeApi
     private DmcSoftLimit _softLimit;
     private DmcHomeProfile _homeProfile;
 
-    /// <summary>每次运动需要多少次 dmc_check_done 轮询才到位。</summary>
+    /// <summary>每次運動需要多少次 dmc_check_done 輪詢才到位。</summary>
     public int PollsPerMove { get; set; } = 3;
 
     public double Position { get; set; }

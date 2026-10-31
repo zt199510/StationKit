@@ -2,11 +2,11 @@ using StationKit.Motion.Dmc.Native;
 
 namespace StationKit.Motion.Dmc;
 
-/// <summary>调用真实 LTDMC.dll 的实现。</summary>
+/// <summary>調用真實 LTDMC.dll 的實現。</summary>
 public sealed class DmcNativeApi : IDmcNativeApi
 {
-    private const ushort AbsoluteMode = 1; // dmc_pmove_unit posi_mode：1 绝对坐标
-    private const ushort SCurveMode = 0;   // dmc_set_s_profile s_mode：保留参数，固定为 0
+    private const ushort AbsoluteMode = 1; // dmc_pmove_unit posi_mode：1 絕對座標
+    private const ushort SCurveMode = 0;   // dmc_set_s_profile s_mode：保留參數，固定為 0
 
     public short BoardClose() => NativeMethods.dmc_board_close();
 
@@ -93,7 +93,7 @@ public sealed class DmcNativeApi : IDmcNativeApi
 
     public short ReadAxisIoStatus(ushort cardNo, ushort axisNo, out uint status)
     {
-        // dmc_axis_io_status 直接返回状态字，没有错误码
+        // dmc_axis_io_status 直接返回狀態字，沒有錯誤碼
         status = NativeMethods.dmc_axis_io_status(cardNo, axisNo);
         return 0;
     }

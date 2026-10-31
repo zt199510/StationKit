@@ -5,20 +5,20 @@ using StationKit.Abstractions.Safety;
 namespace StationKit.Motion.Dmc;
 
 /// <summary>
-/// 雷赛 DMC 总线轴（EtherCAT，nmc_* 系列）的 <see cref="IAxis"/> 实现。
+/// 雷賽 DMC 總線軸（EtherCAT，nmc_* 系列）的 <see cref="IAxis"/> 實現。
 /// <list type="bullet">
-/// <item>运动、回零、停止共用一把发令锁：取消后不会有晚到的指令覆盖停止。</item>
-/// <item>发令锁只在下发指令时持有，等待到位时释放，停止随时能插进来。</item>
-/// <item>到位判定：dmc_check_done 返回 1 且位置在容差内；停了但没到位视为被外部停止，报故障。</item>
-/// <item>回零完成以 dmc_get_home_result == 1 为准，原点信号不能代替回零结果。</item>
+/// <item>運動、回零、停止共用一把發令鎖：取消後不會有晚到的指令覆蓋停止。</item>
+/// <item>發令鎖只在下發指令時持有，等待到位時釋放，停止隨時能插進來。</item>
+/// <item>到位判定：dmc_check_done 返回 1 且位置在容差內；停了但沒到位視為被外部停止，報故障。</item>
+/// <item>回零完成以 dmc_get_home_result == 1 為準，原點信號不能代替回零結果。</item>
 /// </list>
 /// </summary>
 public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
 {
     private const short HomeProfileCompatCode = 16088;
     private const double ReadbackTolerance = 1e-6;
-    private const ushort EmergencyLogicLow = 0;  // dmc_set_emg_mode emg_logic：0 低电平有效
-    private const ushort EmergencyLogicHigh = 1; // 1 高电平有效
+    private const ushort EmergencyLogicLow = 0;  // dmc_set_emg_mode emg_logic：0 低電平有效
+    private const ushort EmergencyLogicHigh = 1; // 1 高電平有效
 
     private readonly IDmcNativeApi _api;
     private readonly DmcAxisOptions _options;
@@ -49,8 +49,8 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
     private ushort Axis => _options.AxisNo;
 
     /// <summary>
-    /// 下发基础参数（脉冲当量、S 段时间）。必须在安全初始化和使能之前调用。
-    /// 脉冲当量错了，所有距离都会按比例走错，所以写入后必须回读。
+    /// 下發基礎參數（脈衝當量、S 段時間）。必須在安全初始化和使能之前調用。
+    /// 脈衝當量錯了，所有距離都會按比例走錯，所以寫入後必須回讀。
     /// </summary>
     public void ApplyBaseParameters()
     {
@@ -58,7 +58,7 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
         var equiv = _options.PulseEquivalent;
         if (!double.IsFinite(equiv) || equiv <= 0)
         {
-            throw new ArgumentException($"{Name}：脉冲当量非法 {equiv}");
+            throw new ArgumentException($"{Name}：脈衝當量非法 {equiv}");
         }
 
         _guard.EnsureSuccess("dmc_set_equiv", _api.SetPulseEquivalent(Card, Axis, equiv), $"equiv={equiv:R}", stage);
@@ -85,7 +85,7 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
         if (positionResult != 0 || ioResult != 0 || done is not (0 or 1))
         {
             return new AxisStatus(AxisState.Alarm, position, homed, false, false,
-                $"状态读取失败：dmc_get_position_unit={positionResult}, dmc_axis_io_status={ioResult}, dmc_check_done={done}");
+                $"狀態讀取失敗：dmc_get_position_unit={positionResult}, dmc_axis_io_status={ioResult}, dmc_check_done={done}");
         }
 
         var io = DmcAxisIo.Parse(rawIo);
@@ -106,7 +106,7 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
             var status = GetStatus();
             if (status.State == AxisState.Alarm)
             {
-                throw new MotionFaultException(Name, $"报警中，需先复位：{status.AlarmReason}");
+                throw new MotionFaultException(Name, $"報警中，需先復位：{status.AlarmReason}");
             }
 
             cancellationToken.ThrowIfCancellationRequested();
@@ -124,7 +124,7 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
 
     public async Task DisableAsync(CancellationToken cancellationToken = default)
     {
-        // 先停再失能：直接断使能，垂直轴可能下坠
+        // 先停再失能：直接斷使能，垂直軸可能下墜
         await StopAsync().ConfigureAwait(false);
         await _motionCommandGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
@@ -148,10 +148,10 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
         profile.Validate();
         if (!double.IsFinite(position))
         {
-            throw new ArgumentException($"目标位置非法：{position}", nameof(position));
+            throw new ArgumentException($"目標位置非法：{position}", nameof(position));
         }
 
-        // 雷赛用加减速时间，不是加速度
+        // 雷賽用加減速時間，不是加速度
         var tacc = profile.Velocity / profile.Acceleration;
         var tdec = profile.Velocity / profile.Deceleration;
         var minVelocity = Math.Min(_options.MinVelocity, profile.Velocity);
@@ -166,7 +166,7 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
                 $"min={minVelocity:R}, max={profile.Velocity:R}, tacc={tacc:R}, tdec={tdec:R}, stop={stopVelocity:R}",
                 "Move");
 
-            // 取消检查放在下发前最后一步：取消完成后不能再有运动指令下发
+            // 取消檢查放在下發前最後一步：取消完成後不能再有運動指令下發
             cancellationToken.ThrowIfCancellationRequested();
             _guard.EnsureSuccess("dmc_pmove_unit", _api.MoveAbsolute(Card, Axis, position),
                 $"target={position:R}, posi_mode=1", "Move");
@@ -183,14 +183,14 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
         if (Math.Abs(actual - position) > _options.InPositionTolerance)
         {
             throw new MotionFaultException(Name,
-                $"运动已停止但未到位：目标 {position:R}，实际 {actual:R}（可能被外部停止）");
+                $"運動已停止但未到位：目標 {position:R}，實際 {actual:R}（可能被外部停止）");
         }
     }
 
     public async Task StopAsync(StopMode mode = StopMode.Decelerate)
     {
         var dmcMode = mode == StopMode.Immediate ? DmcStopMode.Immediate : DmcStopMode.Decelerated;
-        // 停止不可取消；与发令共用锁，保证停止排在已下发的指令之后
+        // 停止不可取消；與發令共用鎖，保證停止排在已下發的指令之後
         await _motionCommandGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
         {
@@ -220,8 +220,8 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
             var result = _api.SetHomeProfile(Card, Axis, expected);
             if (result == HomeProfileCompatCode)
             {
-                // 部分总线固件对该调用返回 16088 但参数实际已生效，沿用现场兼容处理，以下面的回读为准
-                _guard.Warn("nmc_set_home_profile", result, Describe(expected), stage, "按兼容码处理，以回读结果为准");
+                // 部分總線固件對該調用返回 16088 但參數實際已生效，沿用現場兼容處理，以下面的回讀為準
+                _guard.Warn("nmc_set_home_profile", result, Describe(expected), stage, "按兼容碼處理，以回讀結果為準");
             }
             else
             {
@@ -269,7 +269,7 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
         try
         {
             _guard.EnsureSuccess("nmc_clear_axis_errcode", _api.ClearAxisErrorCode(Card, Axis), "errcode=0", "Reset");
-            // 驱动器报警后原点不再可信；清除后需要重新使能并回零
+            // 驅動器報警後原點不再可信；清除後需要重新使能並回零
             lock (_sync)
             {
                 _enabled = false;
@@ -288,8 +288,8 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
         cancellationToken.ThrowIfCancellationRequested();
         if (config.EmergencyStopEnabled && config.EmergencyStopActiveHigh is null)
         {
-            // 急停电平不猜默认值
-            throw new ArgumentException($"{Name}：已启用急停，但未指定急停有效电平");
+            // 急停電平不猜默認值
+            throw new ArgumentException($"{Name}：已啟用急停，但未指定急停有效電平");
         }
 
         const string stage = "Safety";
@@ -311,8 +311,8 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
     }
 
     /// <summary>
-    /// 急停和软限位从控制卡回读。最大速度、最大加速度在雷赛卡上没有对应参数，
-    /// 由 GuardedAxis 在软件层限制，这里返回写入值。
+    /// 急停和軟限位從控制卡回讀。最大速度、最大加速度在雷賽卡上沒有對應參數，
+    /// 由 GuardedAxis 在軟件層限制，這裡返回寫入值。
     /// </summary>
     public Task<AxisSafetyConfig> ReadSafetyConfigAsync(CancellationToken cancellationToken = default)
     {
@@ -329,7 +329,7 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
 
         result = _api.GetSoftLimit(Card, Axis, out var softLimit);
         _guard.EnsureSuccess("dmc_get_softlimit_unit", result, "read", stage, Describe(softLimit));
-        // 计数源和触发动作不在通用安全配置里，在这里单独核对
+        // 計數源和觸發動作不在通用安全配置裡，在這裡單獨核對
         var expectedSoftLimit = ExpectedSoftLimit(written);
         _guard.EnsureReadback("dmc_get_softlimit_unit",
             softLimit.Source == expectedSoftLimit.Source && softLimit.Action == expectedSoftLimit.Action,
@@ -357,17 +357,17 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
         switch (status.State)
         {
             case AxisState.Alarm:
-                throw new MotionFaultException(Name, $"报警中：{status.AlarmReason}");
+                throw new MotionFaultException(Name, $"報警中：{status.AlarmReason}");
             case AxisState.Disabled:
                 throw new MotionFaultException(Name, "未使能");
             case AxisState.Moving or AxisState.Homing:
-                throw new MotionFaultException(Name, "轴正在运动");
+                throw new MotionFaultException(Name, "軸正在運動");
         }
     }
 
     /// <summary>
-    /// 轮询直到完成。期间出现报警立即急停并报故障；超时减速停止并报故障；
-    /// 调用方取消时先停轴，再抛出取消。
+    /// 輪詢直到完成。期間出現報警立即急停並報故障；超時減速停止並報故障；
+    /// 調用方取消時先停軸，再拋出取消。
     /// </summary>
     private async Task WaitUntilAsync(string stage, TimeSpan timeout, Func<AxisStatus, bool> finished,
         CancellationToken cancellationToken)
@@ -382,13 +382,13 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
                 if (status.State == AxisState.Alarm)
                 {
                     await StopAsync(StopMode.Immediate).ConfigureAwait(false);
-                    throw new MotionFaultException(Name, $"{stage} 过程中报警：{status.AlarmReason}");
+                    throw new MotionFaultException(Name, $"{stage} 過程中報警：{status.AlarmReason}");
                 }
 
                 if (status.PositiveLimit || status.NegativeLimit)
                 {
-                    // 限位由控制卡自行停轴，这里只负责报出来
-                    throw new MotionFaultException(Name, $"{stage} 过程中触发{(status.PositiveLimit ? "正" : "负")}限位");
+                    // 限位由控制卡自行停軸，這裡只負責報出來
+                    throw new MotionFaultException(Name, $"{stage} 過程中觸發{(status.PositiveLimit ? "正" : "負")}限位");
                 }
 
                 if (finished(status))
@@ -400,13 +400,13 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
                 {
                     await StopAsync().ConfigureAwait(false);
                     throw new MotionFaultException(Name,
-                        $"{stage} 超时（{timeout.TotalSeconds.ToString("0.#", CultureInfo.InvariantCulture)} 秒），已减速停止");
+                        $"{stage} 超時（{timeout.TotalSeconds.ToString("0.#", CultureInfo.InvariantCulture)} 秒），已減速停止");
                 }
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            // 已下发的运动被取消：先停轴，再报告取消
+            // 已下發的運動被取消：先停軸，再報告取消
             await StopAsync().ConfigureAwait(false);
             throw;
         }
@@ -418,17 +418,17 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
         if (result != 0 || state is not (0 or 1))
         {
             throw new DmcCallException(Name, "dmc_get_home_result", result,
-                $"回零结果读取失败：错误码 {result}，状态 {state}");
+                $"回零結果讀取失敗：錯誤碼 {result}，狀態 {state}");
         }
 
-        // 1 才表示本次回零完成，并且要等轴真正停下来
+        // 1 才表示本次回零完成，並且要等軸真正停下來
         return state == 1 && _api.CheckDone(Card, Axis) == 1;
     }
 
     private string DescribeServoAlarm()
     {
         var result = _api.GetAxisErrorCode(Card, Axis, out var errorCode);
-        return result == 0 ? $"伺服报警 ALM，驱动器错误码 0x{errorCode:X4}" : "伺服报警 ALM（错误码读取失败）";
+        return result == 0 ? $"伺服報警 ALM，驅動器錯誤碼 0x{errorCode:X4}" : "伺服報警 ALM（錯誤碼讀取失敗）";
     }
 
     private DmcSoftLimit ExpectedSoftLimit(AxisSafetyConfig config) =>

@@ -1,7 +1,7 @@
 namespace StationKit.Motion.Dmc;
 
 /// <summary>
-/// 一张以太网连接的 DMC 控制卡：负责连接、断开和整卡急停。
+/// 一張以太網連接的 DMC 控制卡：負責連接、斷開和整卡急停。
 /// </summary>
 public sealed class DmcController(IDmcNativeApi api, ushort cardNo, string ipAddress, Action<string>? log = null)
 {
@@ -9,7 +9,7 @@ public sealed class DmcController(IDmcNativeApi api, ushort cardNo, string ipAdd
 
     public ushort CardNo { get; } = cardNo;
 
-    /// <summary>连接控制卡，返回总轴数。初始化顺序沿用现场验证过的：先关闭，再初始化，再建立以太网连接。</summary>
+    /// <summary>連接控制卡，返回總軸數。初始化順序沿用現場驗證過的：先關閉，再初始化，再建立以太網連接。</summary>
     public uint Open()
     {
         const string stage = "Connect";
@@ -23,7 +23,7 @@ public sealed class DmcController(IDmcNativeApi api, ushort cardNo, string ipAdd
 
     public void Close() => api.BoardClose();
 
-    /// <summary>整卡急停（dmc_emg_stop）。调用失败时抛出异常，由上层报警，不静默吞掉。</summary>
+    /// <summary>整卡急停（dmc_emg_stop）。調用失敗時拋出異常，由上層報警，不靜默吞掉。</summary>
     public void EmergencyStop() =>
         _guard.EnsureSuccess("dmc_emg_stop", api.EmergencyStop(CardNo), "all-axes-stopped", "EmergencyStop");
 
@@ -32,7 +32,7 @@ public sealed class DmcController(IDmcNativeApi api, ushort cardNo, string ipAdd
         ArgumentNullException.ThrowIfNull(options);
         if (options.CardNo != CardNo)
         {
-            throw new ArgumentException($"轴 {options.Name} 的卡号 {options.CardNo} 与控制卡 {CardNo} 不一致");
+            throw new ArgumentException($"軸 {options.Name} 的卡號 {options.CardNo} 與控制卡 {CardNo} 不一致");
         }
 
         return new DmcAxis(api, options, timeProvider, log);

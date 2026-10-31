@@ -3,8 +3,8 @@ using System.Runtime.InteropServices;
 namespace StationKit.Motion.Dmc.Native;
 
 /// <summary>
-/// 雷赛 LTDMC.dll 的 P/Invoke 声明，只声明本适配器用到的函数。
-/// 签名与雷赛官方 LTDMC.cs 一致；LTDMC.dll 需随程序部署（不随本仓库分发）。
+/// 雷賽 LTDMC.dll 的 P/Invoke 聲明，只聲明本適配器用到的函數。
+/// 簽名與雷賽官方 LTDMC.cs 一致；LTDMC.dll 需隨程序部署（不隨本倉庫分發）。
 /// </summary>
 internal static class NativeMethods
 {
@@ -24,7 +24,7 @@ internal static class NativeMethods
     [DllImport(Dll, CallingConvention = CallingConvention.StdCall)]
     internal static extern short nmc_get_total_axes(ushort CardNo, ref uint TotalAxis);
 
-    //--------------------- 基础参数 ---------------------
+    //--------------------- 基礎參數 ---------------------
     [DllImport(Dll, CallingConvention = CallingConvention.StdCall)]
     internal static extern short dmc_set_equiv(ushort CardNo, ushort axis, double equiv);
 
@@ -38,7 +38,7 @@ internal static class NativeMethods
     [DllImport(Dll, CallingConvention = CallingConvention.StdCall)]
     internal static extern short dmc_set_s_profile(ushort CardNo, ushort axis, ushort s_mode, double s_para);
 
-    //--------------------- 安全参数 ---------------------
+    //--------------------- 安全參數 ---------------------
     [DllImport(Dll, CallingConvention = CallingConvention.StdCall)]
     internal static extern short dmc_set_emg_mode(ushort CardNo, ushort axis, ushort enable, ushort emg_logic);
 
@@ -53,7 +53,7 @@ internal static class NativeMethods
     internal static extern short dmc_get_softlimit_unit(ushort CardNo, ushort axis, ref ushort enable,
         ref ushort source_sel, ref ushort SL_action, ref double N_limit, ref double P_limit);
 
-    //--------------------- 使能与报警 ---------------------
+    //--------------------- 使能與報警 ---------------------
     [DllImport(Dll, CallingConvention = CallingConvention.StdCall)]
     internal static extern short nmc_set_axis_enable(ushort CardNo, ushort axis);
 
@@ -66,7 +66,7 @@ internal static class NativeMethods
     [DllImport(Dll, CallingConvention = CallingConvention.StdCall)]
     internal static extern short nmc_get_axis_errcode(ushort CardNo, ushort axis, ref ushort Errcode);
 
-    //--------------------- 运动 ---------------------
+    //--------------------- 運動 ---------------------
     [DllImport(Dll, CallingConvention = CallingConvention.StdCall)]
     internal static extern short dmc_pmove_unit(ushort CardNo, ushort axis, double Dist, ushort posi_mode);
 
