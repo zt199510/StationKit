@@ -1,11 +1,11 @@
-using StationKit.Motion.Dmc.Native;
+using StationKit.Motion.Leadshine.Dmc.Native;
 
-namespace StationKit.Motion.Dmc;
+namespace StationKit.Motion.Leadshine.Dmc;
 
 /// <summary>調用真實 LTDMC.dll 的實現。</summary>
 public sealed class DmcNativeApi : IDmcNativeApi
 {
-    private const ushort AbsoluteMode = 1; // dmc_pmove_unit posi_mode：1 絕對座標
+    private const ushort AbsoluteMode = 1; // dmc_pmove_unit posi_mode：1 絕對坐標
     private const ushort SCurveMode = 0;   // dmc_set_s_profile s_mode：保留參數，固定為 0
 
     public short BoardClose() => NativeMethods.dmc_board_close();
@@ -49,17 +49,17 @@ public sealed class DmcNativeApi : IDmcNativeApi
         return result;
     }
 
-    public short SetSoftLimit(ushort cardNo, ushort axisNo, DmcSoftLimit softLimit) =>
+    public short SetSoftLimit(ushort cardNo, ushort axisNo, LeadshineSoftLimit softLimit) =>
         NativeMethods.dmc_set_softlimit_unit(cardNo, axisNo, ToEnable(softLimit.Enabled), softLimit.Source,
             softLimit.Action, softLimit.Negative, softLimit.Positive);
 
-    public short GetSoftLimit(ushort cardNo, ushort axisNo, out DmcSoftLimit softLimit)
+    public short GetSoftLimit(ushort cardNo, ushort axisNo, out LeadshineSoftLimit softLimit)
     {
         ushort enabled = 0, source = 0, action = 0;
         double negative = 0, positive = 0;
         var result = NativeMethods.dmc_get_softlimit_unit(cardNo, axisNo, ref enabled, ref source, ref action,
             ref negative, ref positive);
-        softLimit = new DmcSoftLimit(enabled != 0, source, action, negative, positive);
+        softLimit = new LeadshineSoftLimit(enabled != 0, source, action, negative, positive);
         return result;
     }
 
@@ -80,7 +80,7 @@ public sealed class DmcNativeApi : IDmcNativeApi
 
     public short CheckDone(ushort cardNo, ushort axisNo) => NativeMethods.dmc_check_done(cardNo, axisNo);
 
-    public short StopAxis(ushort cardNo, ushort axisNo, DmcStopMode mode) =>
+    public short StopAxis(ushort cardNo, ushort axisNo, LeadshineStopMode mode) =>
         NativeMethods.dmc_stop(cardNo, axisNo, (ushort)mode);
 
     public short EmergencyStop(ushort cardNo) => NativeMethods.dmc_emg_stop(cardNo);

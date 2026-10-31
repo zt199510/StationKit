@@ -1,11 +1,11 @@
-namespace StationKit.Motion.Dmc;
+namespace StationKit.Motion.Leadshine.Dmc;
 
 /// <summary>
 /// 一張以太網連接的 DMC 控制卡：負責連接、斷開和整卡急停。
 /// </summary>
 public sealed class DmcController(IDmcNativeApi api, ushort cardNo, string ipAddress, Action<string>? log = null)
 {
-    private readonly DmcCallGuard _guard = new(cardNo, 0, $"卡{cardNo}", log);
+    private readonly LeadshineCallGuard _guard = new("DMC", cardNo, 0, $"卡{cardNo}", log);
 
     public ushort CardNo { get; } = cardNo;
 

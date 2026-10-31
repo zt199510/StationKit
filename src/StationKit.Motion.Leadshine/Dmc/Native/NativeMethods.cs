@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace StationKit.Motion.Dmc.Native;
+namespace StationKit.Motion.Leadshine.Dmc.Native;
 
 /// <summary>
 /// 雷賽 LTDMC.dll 的 P/Invoke 聲明，只聲明本適配器用到的函數。

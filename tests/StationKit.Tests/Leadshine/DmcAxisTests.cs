@@ -1,9 +1,10 @@
 using StationKit.Abstractions.Motion;
 using StationKit.Abstractions.Safety;
-using StationKit.Motion.Dmc;
+using StationKit.Motion.Leadshine;
+using StationKit.Motion.Leadshine.Dmc;
 using StationKit.Safety;
 
-namespace StationKit.Tests.Dmc;
+namespace StationKit.Tests.Leadshine;
 
 public class DmcAxisTests
 {
@@ -80,7 +81,7 @@ public class DmcAxisTests
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => move);
         Assert.Equal("dmc_stop", _api.Calls[^1]);
-        Assert.Equal(DmcStopMode.Decelerated, _api.LastStopMode);
+        Assert.Equal(LeadshineStopMode.Decelerated, _api.LastStopMode);
     }
 
     [Fact]
@@ -89,7 +90,7 @@ public class DmcAxisTests
         _api.ReturnCodes["dmc_pmove_unit"] = 9;
         using var axis = await EnabledAxisAsync();
 
-        var ex = await Assert.ThrowsAsync<DmcCallException>(() => axis.MoveAbsoluteAsync(120, Profile));
+        var ex = await Assert.ThrowsAsync<LeadshineCallException>(() => axis.MoveAbsoluteAsync(120, Profile));
 
         Assert.Equal("dmc_pmove_unit", ex.ApiName);
         Assert.Equal(9, ex.ReturnCode);
@@ -110,7 +111,7 @@ public class DmcAxisTests
 
         var ex = await Assert.ThrowsAsync<MotionFaultException>(() => move);
         Assert.Contains("伺服報警 ALM，驅動器錯誤碼 0x7500", ex.Message);
-        Assert.Equal(DmcStopMode.Immediate, _api.LastStopMode);
+        Assert.Equal(LeadshineStopMode.Immediate, _api.LastStopMode);
     }
 
     [Fact]
@@ -183,7 +184,7 @@ public class DmcAxisTests
         _api.HomeProfileReadback = p => p with { Mode = 35 };
         using var axis = await EnabledAxisAsync();
 
-        var ex = await Assert.ThrowsAsync<DmcCallException>(() => axis.HomeAsync());
+        var ex = await Assert.ThrowsAsync<LeadshineCallException>(() => axis.HomeAsync());
 
         Assert.Contains("回讀不一致", ex.Message);
         Assert.DoesNotContain("dmc_home_move", _api.Calls);
@@ -223,7 +224,7 @@ public class DmcAxisTests
         _api.EquivReadback = 100;
         using var axis = CreateAxis();
 
-        var ex = Assert.Throws<DmcCallException>(axis.ApplyBaseParameters);
+        var ex = Assert.Throws<LeadshineCallException>(axis.ApplyBaseParameters);
 
         Assert.Equal("dmc_get_equiv", ex.ApiName);
         Assert.Contains("Expected=equiv=1000, Actual=equiv=100", ex.Message);
@@ -273,7 +274,7 @@ public class DmcAxisTests
     [InlineData(0b0000_1000u, false, false, false, true)]
     public void 軸IO狀態字解析(uint raw, bool alarm, bool positive, bool negative, bool emergency)
     {
-        var io = DmcAxisIo.Parse(raw);
+        var io = LeadshineAxisIo.Parse(raw);
 
         Assert.Equal(alarm, io.Alarm);
         Assert.Equal(positive, io.PositiveLimit);

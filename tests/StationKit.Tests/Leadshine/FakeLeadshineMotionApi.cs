@@ -1,12 +1,13 @@
-using StationKit.Motion.Dmc;
+using StationKit.Motion.Leadshine;
 
-namespace StationKit.Tests.Dmc;
+namespace StationKit.Tests.Leadshine;
 
 /// <summary>
-/// 假 DMC：記錄調用順序，可注入返回碼、IO 狀態、回讀偏差；
-/// 運動在若干次 dmc_check_done 輪詢後到位，被 dmc_stop 打斷時停在原地。
+/// 假雷賽卡的公共部分：記錄調用順序，可注入返回碼、IO 狀態、回讀偏差；
+/// 運動在若干次 check_done 輪詢後到位，被 stop 打斷時停在原地。
+/// 調用名帶系列前綴（dmc_ / smc_），和真實函數名一致。
 /// </summary>
-internal sealed class FakeDmcNativeApi : IDmcNativeApi
+internal abstract class FakeLeadshineMotionApi(string prefix) : ILeadshineMotionApi
 {
     private readonly object _sync = new();
     private readonly List<string> _calls = [];
@@ -16,21 +17,16 @@ internal sealed class FakeDmcNativeApi : IDmcNativeApi
     private double _equiv;
     private bool _emgEnabled;
     private ushort _emgLogic;
-    private DmcSoftLimit _softLimit;
-    private DmcHomeProfile _homeProfile;
+    private LeadshineSoftLimit _softLimit;
 
-    /// <summary>每次運動需要多少次 dmc_check_done 輪詢才到位。</summary>
+    /// <summary>每次運動需要多少次 check_done 輪詢才到位。</summary>
     public int PollsPerMove { get; set; } = 3;
 
     public double Position { get; set; }
 
     public uint IoStatus { get; set; }
 
-    public ushort AxisErrorCode { get; set; }
-
     public Dictionary<string, short> ReturnCodes { get; } = [];
-
-    public Func<DmcHomeProfile, DmcHomeProfile>? HomeProfileReadback { get; set; }
 
     public Func<ushort, ushort>? EmergencyLogicReadback { get; set; }
 
@@ -49,85 +45,57 @@ internal sealed class FakeDmcNativeApi : IDmcNativeApi
 
     public (double Min, double Max, double Tacc, double Tdec, double Stop) LastProfile { get; private set; }
 
-    public DmcStopMode? LastStopMode { get; private set; }
-
-    public short BoardClose() => Record("dmc_board_close");
-
-    public short BoardInit() => Record("dmc_board_init");
-
-    public short BoardInitEthernet(ushort cardNo, string ipAddress) => Record("dmc_board_init_eth");
-
-    public short GetTotalAxes(ushort cardNo, out uint totalAxes)
-    {
-        totalAxes = 4;
-        return Record("nmc_get_total_axes");
-    }
+    public LeadshineStopMode? LastStopMode { get; private set; }
 
     public short SetPulseEquivalent(ushort cardNo, ushort axisNo, double value)
     {
         _equiv = value;
-        return Record("dmc_set_equiv");
+        return Record($"{prefix}_set_equiv");
     }
 
     public short GetPulseEquivalent(ushort cardNo, ushort axisNo, out double value)
     {
         value = EquivReadback ?? _equiv;
-        return Record("dmc_get_equiv");
+        return Record($"{prefix}_get_equiv");
     }
 
     public short SetProfile(ushort cardNo, ushort axisNo, double minVelocity, double maxVelocity,
         double accelerationTime, double decelerationTime, double stopVelocity)
     {
         LastProfile = (minVelocity, maxVelocity, accelerationTime, decelerationTime, stopVelocity);
-        return Record("dmc_set_profile_unit");
+        return Record($"{prefix}_set_profile_unit");
     }
 
-    public short SetSProfile(ushort cardNo, ushort axisNo, double seconds) => Record("dmc_set_s_profile");
+    public short SetSProfile(ushort cardNo, ushort axisNo, double seconds) => Record($"{prefix}_set_s_profile");
 
     public short SetEmergencyStopMode(ushort cardNo, ushort axisNo, bool enabled, ushort logic)
     {
         (_emgEnabled, _emgLogic) = (enabled, logic);
-        return Record("dmc_set_emg_mode");
+        return Record($"{prefix}_set_emg_mode");
     }
 
     public short GetEmergencyStopMode(ushort cardNo, ushort axisNo, out bool enabled, out ushort logic)
     {
         enabled = _emgEnabled;
         logic = EmergencyLogicReadback?.Invoke(_emgLogic) ?? _emgLogic;
-        return Record("dmc_get_emg_mode");
+        return Record($"{prefix}_get_emg_mode");
     }
 
-    public short SetSoftLimit(ushort cardNo, ushort axisNo, DmcSoftLimit softLimit)
+    public short SetSoftLimit(ushort cardNo, ushort axisNo, LeadshineSoftLimit softLimit)
     {
         _softLimit = softLimit;
-        return Record("dmc_set_softlimit_unit");
+        return Record($"{prefix}_set_softlimit_unit");
     }
 
-    public short GetSoftLimit(ushort cardNo, ushort axisNo, out DmcSoftLimit softLimit)
+    public short GetSoftLimit(ushort cardNo, ushort axisNo, out LeadshineSoftLimit softLimit)
     {
         softLimit = _softLimit;
-        return Record("dmc_get_softlimit_unit");
-    }
-
-    public short EnableAxis(ushort cardNo, ushort axisNo) => Record("nmc_set_axis_enable");
-
-    public short DisableAxis(ushort cardNo, ushort axisNo) => Record("nmc_set_axis_disable");
-
-    public short ClearAxisErrorCode(ushort cardNo, ushort axisNo)
-    {
-        IoStatus &= ~1u;
-        return Record("nmc_clear_axis_errcode");
-    }
-
-    public short GetAxisErrorCode(ushort cardNo, ushort axisNo, out ushort errorCode)
-    {
-        errorCode = AxisErrorCode;
-        return 0;
+        return Record($"{prefix}_get_softlimit_unit");
     }
 
     public short MoveAbsolute(ushort cardNo, ushort axisNo, double position)
     {
-        var result = Record("dmc_pmove_unit");
+        var result = Record($"{prefix}_pmove_unit");
         if (result == 0)
         {
             lock (_sync)
@@ -159,7 +127,7 @@ internal sealed class FakeDmcNativeApi : IDmcNativeApi
         }
     }
 
-    public short StopAxis(ushort cardNo, ushort axisNo, DmcStopMode mode)
+    public short StopAxis(ushort cardNo, ushort axisNo, LeadshineStopMode mode)
     {
         lock (_sync)
         {
@@ -167,10 +135,10 @@ internal sealed class FakeDmcNativeApi : IDmcNativeApi
             LastStopMode = mode;
         }
 
-        return Record("dmc_stop");
+        return Record($"{prefix}_stop");
     }
 
-    public short EmergencyStop(ushort cardNo) => Record("dmc_emg_stop");
+    public short EmergencyStop(ushort cardNo) => Record($"{prefix}_emg_stop");
 
     public short ReadPosition(ushort cardNo, ushort axisNo, out double position)
     {
@@ -188,48 +156,31 @@ internal sealed class FakeDmcNativeApi : IDmcNativeApi
         return 0;
     }
 
-    public short SetHomeProfile(ushort cardNo, ushort axisNo, DmcHomeProfile profile)
-    {
-        _homeProfile = profile;
-        return Record("nmc_set_home_profile");
-    }
-
-    public short GetHomeProfile(ushort cardNo, ushort axisNo, out DmcHomeProfile profile)
-    {
-        profile = HomeProfileReadback?.Invoke(_homeProfile) ?? _homeProfile;
-        return Record("nmc_get_home_profile");
-    }
-
-    public short HomeMove(ushort cardNo, ushort axisNo)
-    {
-        var result = Record("dmc_home_move");
-        if (result == 0)
-        {
-            lock (_sync)
-            {
-                _homing = true;
-                _pollsUntilDone = PollsPerMove;
-            }
-        }
-
-        return result;
-    }
-
-    public short GetHomeResult(ushort cardNo, ushort axisNo, out ushort state)
+    /// <summary>開始模擬回零：若干次輪詢後位置歸零，回零結果變為 1。</summary>
+    protected void StartHoming()
     {
         lock (_sync)
         {
-            state = _homing && _pollsUntilDone == 0 ? (ushort)1 : (ushort)0;
-            if (state == 1)
-            {
-                _homing = false;
-            }
+            _homing = true;
+            _pollsUntilDone = PollsPerMove;
         }
-
-        return 0;
     }
 
-    private short Record(string apiName)
+    protected ushort TakeHomeResult()
+    {
+        lock (_sync)
+        {
+            if (_homing && _pollsUntilDone == 0)
+            {
+                _homing = false;
+                return 1;
+            }
+
+            return 0;
+        }
+    }
+
+    protected short Record(string apiName)
     {
         lock (_sync)
         {

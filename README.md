@@ -4,7 +4,7 @@
 
 - **軸抽象**：統一的單軸接口，語義寫死在接口文檔裡（到位才算完成、取消不晚於下發、故障必須拋出）
 - **模擬軸**：梯形 / 三角形速度規劃、硬限位、報警注入。沒有機台也能跑完整流程和自動化測試
-- **雷賽 DMC 適配器**：EtherCAT 總線軸，返回碼和回讀統一校驗、結構化日誌、發令鎖、回零結果確認
+- **雷賽適配器**：DMC 總線軸和 SMC 脈衝軸共用一套安全邏輯；返回碼和回讀統一校驗、結構化日誌、發令鎖、回零結果確認
 - **安全初始化**：校驗全部 → 寫入 → 回讀核對 → 全部通過才使能；任一步失敗，沒有任何軸被使能
 - **安全包裝**：下發前檢查回零、軟限位、速度上限、互鎖規則，不通過時軸不動
 - **共享資源租約**：多工位共用相機或區域時互斥；持有期間出異常，資源保持佔用，直到人工確認後復位
@@ -14,7 +14,7 @@
 ## 快速體驗
 
 ```bash
-dotnet test                                                # 58 個單元測試
+dotnet test                                                # 80 個單元測試
 dotnet run --project samples/StationKit.Demo               # 雙工位共用相機，正常運行 3 個循環
 dotnet run --project samples/StationKit.Demo -- --fault    # 注入伺服報警，演示故障隔離與人工恢復
 ```
@@ -35,7 +35,7 @@ dotnet run --project samples/StationKit.Demo -- --fault    # 注入伺服報警�
 |---|---|---|
 | `StationKit.Abstractions` | 軸接口、運動參數、安全配置、互鎖接口 | 無 |
 | `StationKit.Motion.Simulation` | 模擬軸、梯形規劃 | Abstractions |
-| `StationKit.Motion.Dmc` | 雷賽 DMC 適配器（LTDMC.dll） | Abstractions |
+| `StationKit.Motion.Leadshine` | 雷賽適配器：DMC 總線軸（LTDMC.dll）、SMC 脈衝軸（LTSMC.dll） | Abstractions |
 | `StationKit.Safety` | 配置校驗、安全初始化、安全包裝軸 | Abstractions |
 | `StationKit.Alarms` | 報警代碼表、報警中心 | 無 |
 | `StationKit.Stations` | 工站基類、共享資源仲裁、節拍統計 | Alarms |
@@ -54,7 +54,8 @@ dotnet run --project samples/StationKit.Demo -- --fault    # 注入伺服報警�
 ## 路線圖
 
 - [x] 雷賽 DMC 適配器（`IAxis` + `IAxisSafetyPort`），待實機驗證
-- [ ] 雷賽脈沖型軸（非總線）、連續插補
+- [x] 雷賽 SMC 脈衝軸，與 DMC 共用安全邏輯，待實機驗證
+- [ ] 連續插補
 - [ ] 數字 IO 抽象和模擬 IO
 - [ ] 配方管理（版本化、換型校驗）
 - [ ] 用戶權限分級（操作員 / 工程師 / 管理員）

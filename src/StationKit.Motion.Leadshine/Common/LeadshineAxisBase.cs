@@ -2,28 +2,27 @@ using System.Globalization;
 using StationKit.Abstractions.Motion;
 using StationKit.Abstractions.Safety;
 
-namespace StationKit.Motion.Dmc;
+namespace StationKit.Motion.Leadshine;
 
 /// <summary>
-/// 雷賽 DMC 總線軸（EtherCAT，nmc_* 系列）的 <see cref="IAxis"/> 實現。
+/// 雷賽軸的公共實現（DMC 總線軸、SMC 脈衝軸共用）。安全相關的邏輯只在這裡寫一份：
 /// <list type="bullet">
 /// <item>運動、回零、停止共用一把發令鎖：取消後不會有晚到的指令覆蓋停止。</item>
 /// <item>發令鎖只在下發指令時持有，等待到位時釋放，停止隨時能插進來。</item>
-/// <item>到位判定：dmc_check_done 返回 1 且位置在容差內；停了但沒到位視為被外部停止，報故障。</item>
-/// <item>回零完成以 dmc_get_home_result == 1 為準，原點信號不能代替回零結果。</item>
+/// <item>到位判定：check_done 返回 1 且位置在容差內；停了但沒到位視為被外部停止，報故障。</item>
+/// <item>回零完成以 get_home_result == 1 為準，原點信號不能代替回零結果。</item>
+/// <item>運動中 ALM / EMG 有效立即急停並報故障；超時減速停止並報故障。</item>
 /// </list>
+/// 子類只實現各系列不同的部分：使能、回零參數、報警復位。
 /// </summary>
-public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
+public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
 {
-    private const short HomeProfileCompatCode = 16088;
-    private const double ReadbackTolerance = 1e-6;
-    private const ushort EmergencyLogicLow = 0;  // dmc_set_emg_mode emg_logic：0 低電平有效
+    protected const double ReadbackTolerance = 1e-6;
+    private const ushort EmergencyLogicLow = 0;  // emg_logic：0 低電平有效
     private const ushort EmergencyLogicHigh = 1; // 1 高電平有效
 
-    private readonly IDmcNativeApi _api;
-    private readonly DmcAxisOptions _options;
-    private readonly TimeProvider _time;
-    private readonly DmcCallGuard _guard;
+    private readonly ILeadshineMotionApi _api;
+    private readonly LeadshineAxisOptions _options;
     private readonly SemaphoreSlim _motionCommandGate = new(1, 1);
     private readonly object _sync = new();
     private bool _enabled;
@@ -31,25 +30,33 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
     private bool _homing;
     private AxisSafetyConfig _softwareSafety = new();
 
-    public DmcAxis(IDmcNativeApi api, DmcAxisOptions options, TimeProvider? timeProvider = null,
-        Action<string>? log = null)
+    protected LeadshineAxisBase(ILeadshineMotionApi api, LeadshineAxisOptions options, string apiPrefix,
+        TimeProvider? timeProvider, Action<string>? log)
     {
         ArgumentNullException.ThrowIfNull(api);
         ArgumentNullException.ThrowIfNull(options);
         _api = api;
         _options = options;
-        _time = timeProvider ?? TimeProvider.System;
-        _guard = new DmcCallGuard(options.CardNo, options.AxisNo, options.Name, log);
+        ApiPrefix = apiPrefix;
+        Time = timeProvider ?? TimeProvider.System;
+        Guard = new LeadshineCallGuard(apiPrefix.ToUpperInvariant(), options.CardNo, options.AxisNo, options.Name, log);
     }
 
     public string Name => _options.Name;
 
-    private ushort Card => _options.CardNo;
+    /// <summary>函數名前綴：dmc 或 smc，用於日誌裡的 ApiName。</summary>
+    protected string ApiPrefix { get; }
 
-    private ushort Axis => _options.AxisNo;
+    protected TimeProvider Time { get; }
+
+    internal LeadshineCallGuard Guard { get; }
+
+    protected ushort Card => _options.CardNo;
+
+    protected ushort Axis => _options.AxisNo;
 
     /// <summary>
-    /// 下發基礎參數（脈衝當量、S 段時間）。必須在安全初始化和使能之前調用。
+    /// 下發基礎參數（脈衝當量、S 段時間，以及各系列自己的信號配置）。必須在安全初始化和使能之前調用。
     /// 脈衝當量錯了，所有距離都會按比例走錯，所以寫入後必須回讀。
     /// </summary>
     public void ApplyBaseParameters()
@@ -61,14 +68,16 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
             throw new ArgumentException($"{Name}：脈衝當量非法 {equiv}");
         }
 
-        _guard.EnsureSuccess("dmc_set_equiv", _api.SetPulseEquivalent(Card, Axis, equiv), $"equiv={equiv:R}", stage);
+        Guard.EnsureSuccess(Api("set_equiv"), _api.SetPulseEquivalent(Card, Axis, equiv), $"equiv={equiv:R}", stage);
         var result = _api.GetPulseEquivalent(Card, Axis, out var actual);
-        _guard.EnsureSuccess("dmc_get_equiv", result, $"equiv={equiv:R}", stage, $"equiv={actual:R}");
-        _guard.EnsureReadback("dmc_get_equiv", Math.Abs(actual - equiv) <= ReadbackTolerance,
+        Guard.EnsureSuccess(Api("get_equiv"), result, $"equiv={equiv:R}", stage, $"equiv={actual:R}");
+        Guard.EnsureReadback(Api("get_equiv"), Math.Abs(actual - equiv) <= ReadbackTolerance,
             $"equiv={equiv:R}", $"equiv={actual:R}", stage);
 
-        _guard.EnsureSuccess("dmc_set_s_profile", _api.SetSProfile(Card, Axis, _options.STime),
+        Guard.EnsureSuccess(Api("set_s_profile"), _api.SetSProfile(Card, Axis, _options.STime),
             $"sTime={_options.STime:R}", stage);
+
+        ApplySignalParameters();
     }
 
     public AxisStatus GetStatus()
@@ -85,10 +94,11 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
         if (positionResult != 0 || ioResult != 0 || done is not (0 or 1))
         {
             return new AxisStatus(AxisState.Alarm, position, homed, false, false,
-                $"狀態讀取失敗：dmc_get_position_unit={positionResult}, dmc_axis_io_status={ioResult}, dmc_check_done={done}");
+                $"狀態讀取失敗：{Api("get_position_unit")}={positionResult}, {Api("axis_io_status")}={ioResult}, " +
+                $"{Api("check_done")}={done}");
         }
 
-        var io = DmcAxisIo.Parse(rawIo);
+        var io = LeadshineAxisIo.Parse(rawIo);
         var alarm = io.Alarm ? DescribeServoAlarm() : io.EmergencyStop ? "急停 EMG 有效" : null;
         var state = alarm != null ? AxisState.Alarm
             : !enabled ? AxisState.Disabled
@@ -110,7 +120,7 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
             }
 
             cancellationToken.ThrowIfCancellationRequested();
-            _guard.EnsureSuccess("nmc_set_axis_enable", _api.EnableAxis(Card, Axis), "enabled=true", "Enable");
+            await EnableCoreAsync().ConfigureAwait(false);
             lock (_sync)
             {
                 _enabled = true;
@@ -129,11 +139,12 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
         await _motionCommandGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
         {
-            _guard.EnsureSuccess("nmc_set_axis_disable", _api.DisableAxis(Card, Axis), "enabled=false", "Disable");
             lock (_sync)
             {
                 _enabled = false;
             }
+
+            await DisableCoreAsync().ConfigureAwait(false);
         }
         finally
         {
@@ -161,14 +172,14 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
         try
         {
             EnsureReadyForMotion();
-            _guard.EnsureSuccess("dmc_set_profile_unit",
+            Guard.EnsureSuccess(Api("set_profile_unit"),
                 _api.SetProfile(Card, Axis, minVelocity, profile.Velocity, tacc, tdec, stopVelocity),
                 $"min={minVelocity:R}, max={profile.Velocity:R}, tacc={tacc:R}, tdec={tdec:R}, stop={stopVelocity:R}",
                 "Move");
 
             // 取消檢查放在下發前最後一步：取消完成後不能再有運動指令下發
             cancellationToken.ThrowIfCancellationRequested();
-            _guard.EnsureSuccess("dmc_pmove_unit", _api.MoveAbsolute(Card, Axis, position),
+            Guard.EnsureSuccess(Api("pmove_unit"), _api.MoveAbsolute(Card, Axis, position),
                 $"target={position:R}, posi_mode=1", "Move");
         }
         finally
@@ -189,13 +200,13 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
 
     public async Task StopAsync(StopMode mode = StopMode.Decelerate)
     {
-        var dmcMode = mode == StopMode.Immediate ? DmcStopMode.Immediate : DmcStopMode.Decelerated;
+        var leadshineMode = mode == StopMode.Immediate ? LeadshineStopMode.Immediate : LeadshineStopMode.Decelerated;
         // 停止不可取消；與發令共用鎖，保證停止排在已下發的指令之後
         await _motionCommandGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
         {
-            _guard.EnsureSuccess("dmc_stop", _api.StopAxis(Card, Axis, dmcMode),
-                $"stop_mode={(ushort)dmcMode}", "Stop");
+            Guard.EnsureSuccess(Api("stop"), _api.StopAxis(Card, Axis, leadshineMode),
+                $"stop_mode={(ushort)leadshineMode}", "Stop");
         }
         finally
         {
@@ -205,9 +216,6 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
 
     public async Task HomeAsync(CancellationToken cancellationToken = default)
     {
-        const string stage = "Home";
-        var expected = _options.HomeProfile;
-
         await _motionCommandGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -217,24 +225,11 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
                 _homed = false;
             }
 
-            var result = _api.SetHomeProfile(Card, Axis, expected);
-            if (result == HomeProfileCompatCode)
-            {
-                // 部分總線固件對該調用返回 16088 但參數實際已生效，沿用現場兼容處理，以下面的回讀為準
-                _guard.Warn("nmc_set_home_profile", result, Describe(expected), stage, "按兼容碼處理，以回讀結果為準");
-            }
-            else
-            {
-                _guard.EnsureSuccess("nmc_set_home_profile", result, Describe(expected), stage);
-            }
-
-            result = _api.GetHomeProfile(Card, Axis, out var actual);
-            _guard.EnsureSuccess("nmc_get_home_profile", result, Describe(expected), stage, Describe(actual));
-            _guard.EnsureReadback("nmc_get_home_profile", Same(expected, actual), Describe(expected),
-                Describe(actual), stage);
+            // 回零參數下發並回讀核對，不一致則不回零
+            ConfigureAndVerifyHome();
 
             cancellationToken.ThrowIfCancellationRequested();
-            _guard.EnsureSuccess("dmc_home_move", _api.HomeMove(Card, Axis), "home=start", stage);
+            Guard.EnsureSuccess(Api("home_move"), StartHome(), "home=start", "Home");
             lock (_sync)
             {
                 _homing = true;
@@ -247,7 +242,7 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
 
         try
         {
-            await WaitUntilAsync(stage, _options.HomeTimeout, _ => IsHomeFinished(), cancellationToken)
+            await WaitUntilAsync("Home", _options.HomeTimeout, _ => IsHomeFinished(), cancellationToken)
                 .ConfigureAwait(false);
             lock (_sync)
             {
@@ -268,13 +263,14 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
         await _motionCommandGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            _guard.EnsureSuccess("nmc_clear_axis_errcode", _api.ClearAxisErrorCode(Card, Axis), "errcode=0", "Reset");
-            // 驅動器報警後原點不再可信；清除後需要重新使能並回零
+            // 報警後原點不再可信；復位後需要重新使能並回零
             lock (_sync)
             {
                 _enabled = false;
                 _homed = false;
             }
+
+            await ResetAlarmCoreAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -294,12 +290,12 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
 
         const string stage = "Safety";
         var logic = config.EmergencyStopActiveHigh == true ? EmergencyLogicHigh : EmergencyLogicLow;
-        _guard.EnsureSuccess("dmc_set_emg_mode",
+        Guard.EnsureSuccess(Api("set_emg_mode"),
             _api.SetEmergencyStopMode(Card, Axis, config.EmergencyStopEnabled, logic),
             $"enable={config.EmergencyStopEnabled}, logic={logic}", stage);
 
         var softLimit = ExpectedSoftLimit(config);
-        _guard.EnsureSuccess("dmc_set_softlimit_unit", _api.SetSoftLimit(Card, Axis, softLimit), Describe(softLimit),
+        Guard.EnsureSuccess(Api("set_softlimit_unit"), _api.SetSoftLimit(Card, Axis, softLimit), Describe(softLimit),
             stage);
 
         lock (_sync)
@@ -325,13 +321,13 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
         }
 
         var result = _api.GetEmergencyStopMode(Card, Axis, out var emgEnabled, out var logic);
-        _guard.EnsureSuccess("dmc_get_emg_mode", result, "read", stage, $"enable={emgEnabled}, logic={logic}");
+        Guard.EnsureSuccess(Api("get_emg_mode"), result, "read", stage, $"enable={emgEnabled}, logic={logic}");
 
         result = _api.GetSoftLimit(Card, Axis, out var softLimit);
-        _guard.EnsureSuccess("dmc_get_softlimit_unit", result, "read", stage, Describe(softLimit));
+        Guard.EnsureSuccess(Api("get_softlimit_unit"), result, "read", stage, Describe(softLimit));
         // 計數源和觸發動作不在通用安全配置裡，在這裡單獨核對
         var expectedSoftLimit = ExpectedSoftLimit(written);
-        _guard.EnsureReadback("dmc_get_softlimit_unit",
+        Guard.EnsureReadback(Api("get_softlimit_unit"),
             softLimit.Source == expectedSoftLimit.Source && softLimit.Action == expectedSoftLimit.Action,
             Describe(expectedSoftLimit), Describe(softLimit), stage);
 
@@ -349,7 +345,50 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
         });
     }
 
-    public void Dispose() => _motionCommandGate.Dispose();
+    public void Dispose()
+    {
+        Dispose(true);
+        GC.SuppressFinalize(this);
+    }
+
+    protected virtual void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _motionCommandGate.Dispose();
+        }
+    }
+
+    /// <summary>使能伺服。失敗必須拋出異常。在發令鎖內調用。</summary>
+    protected abstract Task EnableCoreAsync();
+
+    /// <summary>斷開伺服使能。在發令鎖內調用，調用前軸已停止。</summary>
+    protected abstract Task DisableCoreAsync();
+
+    /// <summary>下發回零參數並回讀核對，不一致必須拋出異常。在發令鎖內調用。</summary>
+    protected abstract void ConfigureAndVerifyHome();
+
+    /// <summary>啟動回零，返回雷賽錯誤碼。在發令鎖內調用。</summary>
+    protected abstract short StartHome();
+
+    /// <summary>讀取回零結果（1 表示本次回零完成），返回雷賽錯誤碼。</summary>
+    protected abstract short ReadHomeResult(out ushort state);
+
+    /// <summary>清除伺服報警。在發令鎖內調用。</summary>
+    protected abstract Task ResetAlarmCoreAsync(CancellationToken cancellationToken);
+
+    /// <summary>各系列自己的信號配置（例如脈衝軸的 ALM、EL 電平），在 <see cref="ApplyBaseParameters"/> 末尾調用。</summary>
+    protected virtual void ApplySignalParameters()
+    {
+    }
+
+    /// <summary>ALM 有效時的報警描述。總線軸可以讀出驅動器錯誤碼。</summary>
+    protected virtual string DescribeServoAlarm() => "伺服報警 ALM";
+
+    protected string Api(string function) => $"{ApiPrefix}_{function}";
+
+    protected static string Describe(LeadshineSoftLimit s) =>
+        $"enable={s.Enabled}, source={s.Source}, action={s.Action}, n={s.Negative:R}, p={s.Positive:R}";
 
     private void EnsureReadyForMotion()
     {
@@ -372,12 +411,12 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
     private async Task WaitUntilAsync(string stage, TimeSpan timeout, Func<AxisStatus, bool> finished,
         CancellationToken cancellationToken)
     {
-        var start = _time.GetTimestamp();
+        var start = Time.GetTimestamp();
         try
         {
             while (true)
             {
-                await Task.Delay(_options.PollInterval, _time, cancellationToken).ConfigureAwait(false);
+                await Task.Delay(_options.PollInterval, Time, cancellationToken).ConfigureAwait(false);
                 var status = GetStatus();
                 if (status.State == AxisState.Alarm)
                 {
@@ -396,7 +435,7 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
                     return;
                 }
 
-                if (_time.GetElapsedTime(start) > timeout)
+                if (Time.GetElapsedTime(start) > timeout)
                 {
                     await StopAsync().ConfigureAwait(false);
                     throw new MotionFaultException(Name,
@@ -414,10 +453,10 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
 
     private bool IsHomeFinished()
     {
-        var result = _api.GetHomeResult(Card, Axis, out var state);
+        var result = ReadHomeResult(out var state);
         if (result != 0 || state is not (0 or 1))
         {
-            throw new DmcCallException(Name, "dmc_get_home_result", result,
+            throw new LeadshineCallException(Name, Api("get_home_result"), result,
                 $"回零結果讀取失敗：錯誤碼 {result}，狀態 {state}");
         }
 
@@ -425,27 +464,6 @@ public sealed class DmcAxis : IAxis, IAxisSafetyPort, IDisposable
         return state == 1 && _api.CheckDone(Card, Axis) == 1;
     }
 
-    private string DescribeServoAlarm()
-    {
-        var result = _api.GetAxisErrorCode(Card, Axis, out var errorCode);
-        return result == 0 ? $"伺服報警 ALM，驅動器錯誤碼 0x{errorCode:X4}" : "伺服報警 ALM（錯誤碼讀取失敗）";
-    }
-
-    private DmcSoftLimit ExpectedSoftLimit(AxisSafetyConfig config) =>
+    private LeadshineSoftLimit ExpectedSoftLimit(AxisSafetyConfig config) =>
         new(true, _options.SoftLimitSource, _options.SoftLimitAction, config.SoftLimitMin, config.SoftLimitMax);
-
-    private static bool Same(DmcHomeProfile a, DmcHomeProfile b) =>
-        a.Mode == b.Mode &&
-        Math.Abs(a.LowVelocity - b.LowVelocity) <= ReadbackTolerance &&
-        Math.Abs(a.HighVelocity - b.HighVelocity) <= ReadbackTolerance &&
-        Math.Abs(a.AccelerationTime - b.AccelerationTime) <= ReadbackTolerance &&
-        Math.Abs(a.DecelerationTime - b.DecelerationTime) <= ReadbackTolerance &&
-        Math.Abs(a.Offset - b.Offset) <= ReadbackTolerance;
-
-    private static string Describe(DmcHomeProfile p) =>
-        $"mode={p.Mode}, low={p.LowVelocity:R}, high={p.HighVelocity:R}, tacc={p.AccelerationTime:R}, " +
-        $"tdec={p.DecelerationTime:R}, offset={p.Offset:R}";
-
-    private static string Describe(DmcSoftLimit s) =>
-        $"enable={s.Enabled}, source={s.Source}, action={s.Action}, n={s.Negative:R}, p={s.Positive:R}";
 }
