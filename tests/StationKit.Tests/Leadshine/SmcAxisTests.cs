@@ -31,6 +31,7 @@ public class SmcAxisTests
     };
 
     private readonly FakeSmcNativeApi _api = new();
+    private readonly LeadshineCardGate _gate = new();
     private readonly List<string> _log = [];
 
     private static SmcAxisOptions Options(ushort axisNo = 0) => new()
@@ -52,7 +53,8 @@ public class SmcAxisTests
         MotionTimeout = TimeSpan.FromSeconds(5),
     };
 
-    private SmcAxis CreateAxis(SmcAxisOptions? options = null) => new(_api, options ?? Options(), log: _log.Add);
+    private SmcAxis CreateAxis(SmcAxisOptions? options = null) =>
+        new(_api, options ?? Options(), _gate, log: _log.Add);
 
     private async Task<SmcAxis> EnabledAxisAsync(SmcAxisOptions? options = null)
     {

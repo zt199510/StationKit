@@ -20,6 +20,8 @@ internal abstract class FakeLeadshineMotionApi(string prefix) : ILeadshineMotion
     private ushort _emgLogic;
     private LeadshineSoftLimit _softLimit;
     private LeadshineInpMode _inp;
+    private int _concurrent;
+    private int _maxConcurrent;
 
     /// <summary>每次運動需要多少次 check_done 輪詢才到位。</summary>
     public int PollsPerMove { get; set; } = 3;
@@ -268,8 +270,26 @@ internal abstract class FakeLeadshineMotionApi(string prefix) : ILeadshineMotion
         }
     }
 
+    /// <summary>同時在 SDK 內部的調用數的最大值，用於驗證卡鎖：大於 1 說明有併發調用。</summary>
+    public int MaxConcurrentCalls => _maxConcurrent;
+
+    /// <summary>每次記錄調用時在「SDK 內部」停留的時間，用來放大併發窗口。</summary>
+    public TimeSpan CallDuration { get; set; }
+
     protected short Record(string apiName)
     {
+        var inside = Interlocked.Increment(ref _concurrent);
+        int max;
+        while (inside > (max = _maxConcurrent) && Interlocked.CompareExchange(ref _maxConcurrent, inside, max) != max)
+        {
+        }
+
+        if (CallDuration > TimeSpan.Zero)
+        {
+            Thread.Sleep(CallDuration);
+        }
+
+        Interlocked.Decrement(ref _concurrent);
         lock (_sync)
         {
             _calls.Add(apiName);

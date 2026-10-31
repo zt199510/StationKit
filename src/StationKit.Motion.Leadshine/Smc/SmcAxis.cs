@@ -13,11 +13,18 @@ namespace StationKit.Motion.Leadshine.Smc;
 /// </summary>
 public sealed class SmcAxis : LeadshineAxisBase
 {
-    private readonly ISmcNativeApi _api;
+    private readonly GatedSmcNativeApi _api;
     private readonly SmcAxisOptions _options;
 
-    public SmcAxis(ISmcNativeApi api, SmcAxisOptions options, TimeProvider? timeProvider = null,
-        Action<string>? log = null)
+    /// <param name="api">原始 SDK。構造時用 <paramref name="gate"/> 包一層，之後的調用全部經過卡鎖。</param>
+    /// <param name="gate">這根軸所在控制器的 DLL 調用鎖，同一控制器上的軸和控制器必須共用同一個。</param>
+    public SmcAxis(ISmcNativeApi api, SmcAxisOptions options, LeadshineCardGate gate,
+        TimeProvider? timeProvider = null, Action<string>? log = null)
+        : this(Wrap(api, gate), options, timeProvider, log)
+    {
+    }
+
+    private SmcAxis(GatedSmcNativeApi api, SmcAxisOptions options, TimeProvider? timeProvider, Action<string>? log)
         : base(api, options, "smc", timeProvider, log)
     {
         _api = api;
@@ -41,6 +48,13 @@ public sealed class SmcAxis : LeadshineAxisBase
     }
 
     private delegate short Getter<T>(out T value);
+
+    private static GatedSmcNativeApi Wrap(ISmcNativeApi api, LeadshineCardGate gate)
+    {
+        ArgumentNullException.ThrowIfNull(api);
+        ArgumentNullException.ThrowIfNull(gate);
+        return new GatedSmcNativeApi(api, gate);
+    }
 
     private ushort ServoOffLevel => (ushort)(1 - _options.ServoOnLevel);
 

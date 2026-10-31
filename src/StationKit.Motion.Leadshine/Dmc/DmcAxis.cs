@@ -7,11 +7,18 @@ public sealed class DmcAxis : LeadshineAxisBase
 {
     private const short HomeProfileCompatCode = 16088;
 
-    private readonly IDmcNativeApi _api;
+    private readonly GatedDmcNativeApi _api;
     private readonly DmcAxisOptions _options;
 
-    public DmcAxis(IDmcNativeApi api, DmcAxisOptions options, TimeProvider? timeProvider = null,
-        Action<string>? log = null)
+    /// <param name="api">原始 SDK。構造時用 <paramref name="gate"/> 包一層，之後的調用全部經過卡鎖。</param>
+    /// <param name="gate">這根軸所在卡的 DLL 調用鎖，同一張卡上的軸和控制器必須共用同一個。</param>
+    public DmcAxis(IDmcNativeApi api, DmcAxisOptions options, LeadshineCardGate gate,
+        TimeProvider? timeProvider = null, Action<string>? log = null)
+        : this(Wrap(api, gate), options, timeProvider, log)
+    {
+    }
+
+    private DmcAxis(GatedDmcNativeApi api, DmcAxisOptions options, TimeProvider? timeProvider, Action<string>? log)
         : base(api, options, "dmc", timeProvider, log)
     {
         _api = api;
@@ -61,6 +68,13 @@ public sealed class DmcAxis : LeadshineAxisBase
         Guard.EnsureSuccess("nmc_get_home_profile", result, Describe(expected), stage, Describe(actual));
         Guard.EnsureReadback("nmc_get_home_profile", Same(expected, actual), Describe(expected), Describe(actual),
             stage);
+    }
+
+    private static GatedDmcNativeApi Wrap(IDmcNativeApi api, LeadshineCardGate gate)
+    {
+        ArgumentNullException.ThrowIfNull(api);
+        ArgumentNullException.ThrowIfNull(gate);
+        return new GatedDmcNativeApi(api, gate);
     }
 
     protected override short StartHome() => _api.HomeMove(Card, Axis);

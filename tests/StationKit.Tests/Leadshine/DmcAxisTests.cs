@@ -22,10 +22,11 @@ public class DmcAxisTests
     };
 
     private readonly FakeDmcNativeApi _api = new();
+    private readonly LeadshineCardGate _gate = new();
     private readonly List<string> _log = [];
 
     private DmcAxis CreateAxis(ushort axisNo = 0, TimeSpan? motionTimeout = null) =>
-        new(_api, CreateOptions(axisNo, motionTimeout), log: _log.Add);
+        new(_api, CreateOptions(axisNo, motionTimeout), _gate, log: _log.Add);
 
     private static DmcAxisOptions CreateOptions(ushort axisNo = 0, TimeSpan? motionTimeout = null) => new()
     {
@@ -390,7 +391,8 @@ public class DmcAxisTests
     public async Task 總線軸回零_不改寫編碼器_反饋由驅動器維護()
     {
         _api.EncoderOffset = 0.003;
-        using var axis = new DmcAxis(_api, CreateOptions() with { Feedback = LeadshineFeedback.Encoder }, log: _log.Add);
+        using var axis = new DmcAxis(_api, CreateOptions() with { Feedback = LeadshineFeedback.Encoder }, _gate,
+            log: _log.Add);
         await axis.EnableAsync();
 
         await axis.HomeAsync();
@@ -405,7 +407,7 @@ public class DmcAxisTests
         HomeMethod = LeadshineHomeMethod.AbsoluteEncoder,
         HomeProfile = null,
         AbsoluteHomeProfile = MotionProfile.Symmetric(50, 500),
-    }, log: _log.Add);
+    }, _gate, log: _log.Add);
 
     /// <summary>上電狀態：指令位置 0，編碼器絕對位置為 <paramref name="absolute"/>。</summary>
     private void PowerOnAt(double absolute)
