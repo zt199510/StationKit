@@ -92,6 +92,9 @@ internal static class NativeMethods
     internal static extern short dmc_get_position_unit(ushort CardNo, ushort axis, ref double pos);
 
     [DllImport(Dll, CallingConvention = CallingConvention.StdCall)]
+    internal static extern short dmc_set_position_unit(ushort CardNo, ushort axis, double pos);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.StdCall)]
     internal static extern short dmc_get_encoder_unit(ushort CardNo, ushort axis, ref double pos);
 
     [DllImport(Dll, CallingConvention = CallingConvention.StdCall)]

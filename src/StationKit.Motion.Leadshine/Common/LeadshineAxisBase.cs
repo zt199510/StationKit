@@ -55,6 +55,25 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
             // 兩個都配，出了問題分不清是哪個起作用；有 INP 就以 INP 為準
             throw new ArgumentException($"{options.Name}：已啟用 INP，不能再配置停穩延時");
         }
+
+        if (options.HomeMethod == LeadshineHomeMethod.AbsoluteEncoder)
+        {
+            if (options.Feedback != LeadshineFeedback.Encoder)
+            {
+                throw new ArgumentException($"{options.Name}：絕對值回零需要編碼器反饋（Feedback = Encoder）");
+            }
+
+            if (options.AbsoluteHomeProfile is null)
+            {
+                throw new ArgumentException($"{options.Name}：絕對值回零未配置走到零點的速度（AbsoluteHomeProfile）");
+            }
+
+            options.AbsoluteHomeProfile.Validate();
+            if (!double.IsFinite(options.AbsoluteHomeTarget))
+            {
+                throw new ArgumentException($"{options.Name}：絕對值回零的零點位置非法（{options.AbsoluteHomeTarget}）");
+            }
+        }
     }
 
     public string Name => _options.Name;
@@ -295,6 +314,12 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
 
     public async Task HomeAsync(CancellationToken cancellationToken = default)
     {
+        if (_options.HomeMethod == LeadshineHomeMethod.AbsoluteEncoder)
+        {
+            await HomeByAbsoluteEncoderAsync(cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
         await _motionCommandGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -336,6 +361,63 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
             {
                 _homing = false;
             }
+        }
+    }
+
+    /// <summary>
+    /// 絕對值回零：讀編碼器絕對位置 → 校驗可信 → 把指令位置同步過去並回讀 → 絕對運動走到零點。
+    /// 走到零點後才標記為已回零，和感應器回零一致。
+    /// </summary>
+    private async Task HomeByAbsoluteEncoderAsync(CancellationToken cancellationToken)
+    {
+        const string stage = "AbsoluteHome";
+        await _motionCommandGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            EnsureReadyForMotion();
+            AxisSafetyConfig safety;
+            lock (_sync)
+            {
+                _homed = false;
+                safety = _softwareSafety;
+            }
+
+            var result = _api.ReadFeedbackPosition(Card, Axis, out var absolute);
+            Guard.EnsureSuccess(Api("get_encoder_unit"), result, "read", stage, $"encoder={absolute:R}");
+
+            // 絕對位置必須落在軟限位內才可信：編碼器電池沒電、多圈數據丟失、驅動器原點被改過，
+            // 讀到的都是一個「看起來正常」的錯誤值，直接拿去走零點就是撞機
+            if (double.IsNaN(safety.SoftLimitMin) || double.IsNaN(safety.SoftLimitMax))
+            {
+                throw new MotionFaultException(Name, "未寫入安全配置，無法校驗絕對位置是否可信，拒絕絕對值回零");
+            }
+
+            if (!(absolute >= safety.SoftLimitMin && absolute <= safety.SoftLimitMax))
+            {
+                throw new MotionFaultException(Name,
+                    $"絕對位置 {absolute:R} 不在軟限位 [{safety.SoftLimitMin:R}, {safety.SoftLimitMax:R}] 內，不可信：" +
+                    "檢查編碼器電池、多圈數據和驅動器原點設置；確認位置正確後低速點動回到範圍內");
+            }
+
+            // 上電時指令位置是 0，不同步的話「走到零點」這條運動根本不會動
+            Guard.EnsureSuccess(Api("set_position_unit"), _api.SetPosition(Card, Axis, absolute),
+                $"pos={absolute:R}", stage);
+            result = _api.ReadPosition(Card, Axis, out var command);
+            Guard.EnsureSuccess(Api("get_position_unit"), result, $"pos={absolute:R}", stage, $"pos={command:R}");
+            Guard.EnsureReadback(Api("get_position_unit"), Math.Abs(command - absolute) <= 1 / _options.PulseEquivalent,
+                $"pos={absolute:R}", $"pos={command:R}", stage);
+        }
+        finally
+        {
+            _motionCommandGate.Release();
+        }
+
+        // 坐標已經可信，走零點就是普通的點位運動：到位、INP、取消、報警處理全部複用
+        await MoveAbsoluteAsync(_options.AbsoluteHomeTarget, _options.AbsoluteHomeProfile!, cancellationToken)
+            .ConfigureAwait(false);
+        lock (_sync)
+        {
+            _homed = true;
         }
     }
 

@@ -511,6 +511,21 @@ public class SmcAxisTests
         Assert.DoesNotContain("smc_set_encoder_unit", _api.Calls);
     }
 
+    [Fact]
+    public void 脈衝軸配置絕對值回零_構造時拒絕並說明原因()
+    {
+        var options = Options() with
+        {
+            Feedback = LeadshineFeedback.Encoder,
+            HomeMethod = LeadshineHomeMethod.AbsoluteEncoder,
+            AbsoluteHomeProfile = MotionProfile.Symmetric(50, 500),
+        };
+
+        var ex = Assert.Throws<ArgumentException>(() => CreateAxis(options));
+
+        Assert.Contains("脈衝軸不支持絕對值回零", ex.Message);
+    }
+
     private static async Task WaitUntilAsync(Func<bool> condition)
     {
         var deadline = DateTime.UtcNow.AddSeconds(5);

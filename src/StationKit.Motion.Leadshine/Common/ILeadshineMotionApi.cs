@@ -77,6 +77,9 @@ public interface ILeadshineMotionApi
 
     short ReadPosition(ushort cardNo, ushort axisNo, out double position);
 
+    /// <summary>設置指令位置計數值，用於絕對值回零時把指令位置同步到編碼器絕對位置。</summary>
+    short SetPosition(ushort cardNo, ushort axisNo, double position);
+
     /// <summary>讀反饋位置（編碼器，單位與脈衝當量一致）。</summary>
     short ReadFeedbackPosition(ushort cardNo, ushort axisNo, out double position);
 

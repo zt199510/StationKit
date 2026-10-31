@@ -35,6 +35,20 @@ x.ApplyBaseParameters();                  // 脈衝當量（寫入後回讀）�
 await SafetyStartup.RunAsync([new(x, x, xSafety)]);   // 急停、軟限位：寫入 → 回讀 → 使能
 await x.HomeAsync();
 
+// 絕對值編碼器的總線軸：不觸碰感應器，讀絕對位置後直接走到零點
+var r = controller.CreateAxis(new DmcAxisOptions
+{
+    CardNo = 0,
+    AxisNo = 3,
+    Name = "R",
+    PulseEquivalent = 1000,
+    Feedback = LeadshineFeedback.Encoder,                  // 絕對值回零必須有編碼器反饋
+    InPositionSignal = LeadshineInpMode.Disabled,
+    HomeMethod = LeadshineHomeMethod.AbsoluteEncoder,
+    AbsoluteHomeProfile = MotionProfile.Symmetric(50, 500),
+    AbsoluteHomeTarget = 0,
+});
+
 IAxis guardedX = new GuardedAxis(x, xSafety, interlocks);   // 業務代碼只拿包裝後的軸
 ```
 
@@ -105,6 +119,7 @@ await z.HomeAsync();                      // homemode / 回零速度 / 原點電
 | 使能 | `smc_write_sevon_pin` 寫 `ServoOnLevel`，等 `ServoSettleTime` 後 `smc_read_sevon_pin` 回讀，不一致即使能失敗；失能寫相反電平並回讀 |
 | 信號配置 | `smc_set_alm_mode`、`smc_set_el_mode` 每次啟動重新下發並回讀，不依賴控制卡裡固化（burn）的參數 |
 | 回零參數 | `homemode`、`home_profile_unit`、`home_pin_logic`、`home_position_unit` 四組逐一寫入回讀，任一不一致不回零 |
+| 回零方式 | `HomeMethod = Sensor`（默認，增量編碼器）：觸碰感應器回零。`AbsoluteEncoder`（僅總線軸）：讀編碼器絕對位置 → 必須落在軟限位內才可信（防電池掉電、多圈數據丟失）→ 指令位置同步過去並回讀 → 用普通絕對運動走到 `AbsoluteHomeTarget`，到位後才算回零完成。脈衝軸配置絕對值方式時直接拒絕 |
 | 編碼器對齊 | `Feedback = Encoder` 時，回零完成後把編碼器設為指令位置並回讀（容差一個脈衝），失敗則回零不算完成。DMC 總線軸由驅動器維護實際位置，不改寫 |
 | 報警復位 | 未配置 `AlarmReset` 時直接報故障，不假裝復位成功；配置了則先斷使能，再在 ERC 或通用輸出口上打一個有效電平脈衝（取消也保證撤銷），之後 ALM 必須在 `ClearTimeout` 內消失 |
 
@@ -119,6 +134,8 @@ await z.HomeAsync();                      // homemode / 回零速度 / 原點電
 - [ ] INP：驅動器的 INP 輸出是否接到卡上、有效電平；啟用後手動推軸偏離，確認 `axis_io_status` 第 8 位會變。DMC 總線軸的 INP 是否同樣反映在第 8 位，需要實機確認
 - [ ] 反饋位置比例：命令走 100 mm，看反饋是否也是 100 mm。不一致說明驅動器編碼器輸出分頻和電子齒輪不匹配，`encoder_unit` 和指令用的是同一個脈衝當量
 - [ ] 反饋方向：正向運動時反饋位置也要增大，反了要改驅動器的編碼器輸出方向
+- [ ] 絕對值編碼器：驅動器的絕對原點已在機械零點設定；斷電重上電後讀到的位置與斷電前一致；拔掉電池確認驅動器會報警（而不是給一個錯誤值）
+- [ ] 絕對值回零走零點的速度先設低，第一次手放急停上試
 - [ ] DMC 總線軸：回零後 `get_encoder_unit` 是否和指令位置一致（現在不改寫，依賴驅動器）
 - [ ] 沒接 INP 的軸：需要停穩的（拍照、加工）按實測配置 `SettleTime`，不需要的保持 0
 - [ ] `InPositionTimeout`：按驅動器整定後的實際停穩時間設置，太短會誤報，太長會掩蓋增益問題

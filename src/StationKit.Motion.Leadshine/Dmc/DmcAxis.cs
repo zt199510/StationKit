@@ -16,6 +16,10 @@ public sealed class DmcAxis : LeadshineAxisBase
     {
         _api = api;
         _options = options;
+        if (options.HomeMethod == LeadshineHomeMethod.Sensor && options.HomeProfile is null)
+        {
+            throw new ArgumentException($"{options.Name}：感應器回零未配置回零參數（HomeProfile）");
+        }
     }
 
     protected override Task EnableCoreAsync()
@@ -40,7 +44,8 @@ public sealed class DmcAxis : LeadshineAxisBase
     protected override void ConfigureAndVerifyHome()
     {
         const string stage = "Home";
-        var expected = _options.HomeProfile;
+        // 只有感應器回零會走到這裡，構造時已確認不為 null
+        var expected = _options.HomeProfile!.Value;
         var result = _api.SetHomeProfile(Card, Axis, expected);
         if (result == HomeProfileCompatCode)
         {

@@ -399,6 +399,138 @@ public class DmcAxisTests
         Assert.Equal(0.003, axis.GetStatus().FeedbackPosition, 9);
     }
 
+    private DmcAxis AbsoluteAxis(DmcAxisOptions? options = null) => new(_api, options ?? CreateOptions() with
+    {
+        Feedback = LeadshineFeedback.Encoder,
+        HomeMethod = LeadshineHomeMethod.AbsoluteEncoder,
+        HomeProfile = null,
+        AbsoluteHomeProfile = MotionProfile.Symmetric(50, 500),
+    }, log: _log.Add);
+
+    /// <summary>上電狀態：指令位置 0，編碼器絕對位置為 <paramref name="absolute"/>。</summary>
+    private void PowerOnAt(double absolute)
+    {
+        _api.Position = 0;
+        _api.EncoderOffset = absolute;
+    }
+
+    [Fact]
+    public async Task 絕對值回零_讀編碼器同步指令位置_再絕對運動到零點_不觸碰感應器()
+    {
+        PowerOnAt(123.4);
+        using var axis = AbsoluteAxis();
+        await axis.WriteSafetyConfigAsync(Safety);
+        await axis.EnableAsync();
+
+        await axis.HomeAsync();
+
+        // 狀態讀取也會讀編碼器，這裡去掉它們只看動作順序：讀絕對位置 → 同步指令位置 → 走零點
+        var calls = _api.Calls.SkipWhile(c => c != "nmc_set_axis_enable").Skip(1).ToList();
+        Assert.Equal("dmc_get_encoder_unit", calls[0]);
+        Assert.Equal(["dmc_set_position_unit", "dmc_set_profile_unit", "dmc_pmove_unit"],
+            calls.Where(c => c != "dmc_get_encoder_unit"));
+        Assert.DoesNotContain("dmc_home_move", _api.Calls);
+        var status = axis.GetStatus();
+        Assert.True(status.IsHomed);
+        Assert.Equal(0, status.Position);
+        Assert.Equal(0, status.FeedbackPosition, 9);
+        Assert.Contains(_log, line => line.Contains("ApiName=dmc_get_encoder_unit") && line.Contains("encoder=123.4"));
+    }
+
+    [Fact]
+    public async Task 絕對位置超出軟限位_判定不可信_不同步也不運動()
+    {
+        PowerOnAt(5000);   // 例如編碼器電池沒電，多圈數據丟失
+        using var axis = AbsoluteAxis();
+        await axis.WriteSafetyConfigAsync(Safety);
+        await axis.EnableAsync();
+
+        var ex = await Assert.ThrowsAsync<MotionFaultException>(() => axis.HomeAsync());
+
+        Assert.Contains("絕對位置 5000 不在軟限位 [-1, 300] 內", ex.Message);
+        Assert.DoesNotContain("dmc_set_position_unit", _api.Calls);
+        Assert.DoesNotContain("dmc_pmove_unit", _api.Calls);
+        Assert.False(axis.GetStatus().IsHomed);
+    }
+
+    [Fact]
+    public async Task 未寫入安全配置_拒絕絕對值回零()
+    {
+        PowerOnAt(10);
+        using var axis = AbsoluteAxis();
+        await axis.EnableAsync();
+
+        var ex = await Assert.ThrowsAsync<MotionFaultException>(() => axis.HomeAsync());
+
+        Assert.Contains("未寫入安全配置", ex.Message);
+        Assert.DoesNotContain("dmc_pmove_unit", _api.Calls);
+    }
+
+    [Fact]
+    public async Task 指令位置同步回讀不一致_不運動()
+    {
+        PowerOnAt(10);
+        _api.PositionWriteIgnored = true;
+        using var axis = AbsoluteAxis();
+        await axis.WriteSafetyConfigAsync(Safety);
+        await axis.EnableAsync();
+
+        var ex = await Assert.ThrowsAsync<LeadshineCallException>(() => axis.HomeAsync());
+
+        Assert.Equal("dmc_get_position_unit", ex.ApiName);
+        Assert.DoesNotContain("dmc_pmove_unit", _api.Calls);
+        Assert.False(axis.GetStatus().IsHomed);
+    }
+
+    [Fact]
+    public async Task 走零點途中報警_不算回零完成()
+    {
+        PowerOnAt(100);
+        _api.PollsPerMove = int.MaxValue;
+        using var axis = AbsoluteAxis();
+        await axis.WriteSafetyConfigAsync(Safety);
+        await axis.EnableAsync();
+
+        var home = axis.HomeAsync();
+        await WaitForCallAsync("dmc_pmove_unit");
+        _api.IoStatus = 1;
+
+        await Assert.ThrowsAsync<MotionFaultException>(() => home);
+        Assert.False(axis.GetStatus().IsHomed);
+    }
+
+    [Fact]
+    public void 絕對值回零但沒有編碼器反饋_構造時拒絕()
+    {
+        var options = CreateOptions() with
+        {
+            HomeMethod = LeadshineHomeMethod.AbsoluteEncoder,
+            AbsoluteHomeProfile = MotionProfile.Symmetric(50, 500),
+        };
+
+        var ex = Assert.Throws<ArgumentException>(() => AbsoluteAxis(options));
+
+        Assert.Contains("需要編碼器反饋", ex.Message);
+    }
+
+    [Fact]
+    public void 絕對值回零未配置走零點速度_構造時拒絕()
+    {
+        var options = CreateOptions() with
+        {
+            Feedback = LeadshineFeedback.Encoder,
+            HomeMethod = LeadshineHomeMethod.AbsoluteEncoder,
+        };
+
+        Assert.Throws<ArgumentException>(() => AbsoluteAxis(options));
+    }
+
+    [Fact]
+    public void 感應器回零未配置回零參數_構造時拒絕()
+    {
+        Assert.Throws<ArgumentException>(() => AbsoluteAxis(CreateOptions() with { HomeProfile = null }));
+    }
+
     private async Task WaitForCallAsync(string apiName)
     {
         var deadline = DateTime.UtcNow.AddSeconds(5);

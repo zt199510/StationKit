@@ -1,4 +1,19 @@
+using StationKit.Abstractions.Motion;
+
 namespace StationKit.Motion.Leadshine;
+
+/// <summary>回零方式。</summary>
+public enum LeadshineHomeMethod
+{
+    /// <summary>增量編碼器：上電後坐標未知，走回零動作觸碰原點感應器建立坐標。</summary>
+    Sensor,
+
+    /// <summary>
+    /// 絕對值編碼器：直接讀編碼器絕對位置建立坐標，再用絕對運動走到零點，不需要觸碰感應器。
+    /// 只支持總線軸：脈衝軸卡上的編碼器只是 A/B 相計數器，上電從 0 開始，讀不到絕對位置。
+    /// </summary>
+    AbsoluteEncoder,
+}
 
 /// <summary>雷賽軸的公共配置。DMC 和 SMC 各自的回零、使能參數在子類裡。</summary>
 public abstract record LeadshineAxisOptions
@@ -18,6 +33,15 @@ public abstract record LeadshineAxisOptions
     /// 沒有編碼器卻去讀，讀到的是 0 或上電隨機值，顯示出來會誤導人。
     /// </summary>
     public required LeadshineFeedback Feedback { get; init; }
+
+    /// <summary>回零方式，默認觸碰感應器回零（增量編碼器）。</summary>
+    public LeadshineHomeMethod HomeMethod { get; init; } = LeadshineHomeMethod.Sensor;
+
+    /// <summary>絕對值回零時走到零點用的速度參數，<see cref="LeadshineHomeMethod.AbsoluteEncoder"/> 時必填。</summary>
+    public MotionProfile? AbsoluteHomeProfile { get; init; }
+
+    /// <summary>絕對值回零的零點位置（機械坐標），默認 0。</summary>
+    public double AbsoluteHomeTarget { get; init; }
 
     /// <summary>
     /// 是否用 INP 判定到位。必填，沒有默認值：接沒接 INP 由現場接線決定，

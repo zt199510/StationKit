@@ -27,6 +27,13 @@ public sealed class SmcAxis : LeadshineAxisBase
             throw new ArgumentException($"{options.Name}：SEVON 使能電平只能是 0 或 1，實際 {options.ServoOnLevel}");
         }
 
+        if (options.HomeMethod == LeadshineHomeMethod.AbsoluteEncoder)
+        {
+            throw new ArgumentException(
+                $"{options.Name}：脈衝軸不支持絕對值回零。卡上的編碼器只是 A/B 相計數器，控制器上電從 0 開始計數，" +
+                "讀不到驅動器的絕對位置；需要另做驅動器絕對值數據傳輸（RS485 或 ABS 握手）");
+        }
+
         if (options.AlarmReset is { ActiveLevel: > 1 } reset)
         {
             throw new ArgumentException($"{options.Name}：報警復位有效電平只能是 0 或 1，實際 {reset.ActiveLevel}");

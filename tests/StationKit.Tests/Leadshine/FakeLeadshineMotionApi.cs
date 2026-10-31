@@ -196,6 +196,24 @@ internal abstract class FakeLeadshineMotionApi(string prefix) : ILeadshineMotion
         return 0;
     }
 
+    /// <summary>模擬 set_position_unit 調用成功但沒有生效。</summary>
+    public bool PositionWriteIgnored { get; set; }
+
+    /// <summary>改寫指令位置計數，編碼器讀數不變（只是兩個計數器之一被重設）。</summary>
+    public short SetPosition(ushort cardNo, ushort axisNo, double position)
+    {
+        if (!PositionWriteIgnored)
+        {
+            lock (_sync)
+            {
+                EncoderOffset -= position - Position;
+                Position = position;
+            }
+        }
+
+        return Record($"{prefix}_set_position_unit");
+    }
+
     public short ReadFeedbackPosition(ushort cardNo, ushort axisNo, out double position)
     {
         lock (_sync)

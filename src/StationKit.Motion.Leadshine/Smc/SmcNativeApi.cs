@@ -120,6 +120,9 @@ public sealed class SmcNativeApi : ISmcNativeApi
         return NativeMethods.smc_get_position_unit(cardNo, axisNo, ref position);
     }
 
+    public short SetPosition(ushort cardNo, ushort axisNo, double position) =>
+        NativeMethods.smc_set_position_unit(cardNo, axisNo, position);
+
     public short ReadFeedbackPosition(ushort cardNo, ushort axisNo, out double position)
     {
         position = 0;
