@@ -104,6 +104,12 @@ internal static class NativeMethods
     internal static extern short smc_get_position_unit(ushort ConnectNo, ushort axis, ref double pos);
 
     [DllImport(Dll, CallingConvention = CallingConvention.StdCall)]
+    internal static extern short smc_get_encoder_unit(ushort ConnectNo, ushort axis, ref double pos);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.StdCall)]
+    internal static extern short smc_set_encoder_unit(ushort ConnectNo, ushort axis, double pos);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.StdCall)]
     internal static extern uint smc_axis_io_status(ushort ConnectNo, ushort axis);
 
     //--------------------- 回零 ---------------------

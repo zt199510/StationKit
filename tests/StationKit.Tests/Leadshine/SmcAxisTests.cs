@@ -40,6 +40,7 @@ public class SmcAxisTests
         Name = $"Y{axisNo}",
         PulseEquivalent = 1000,
         InPositionSignal = LeadshineInpMode.Disabled,
+        Feedback = LeadshineFeedback.None,
         ServoOnLevel = 0,
         ServoSettleTime = TimeSpan.Zero,
         AlarmSignal = new SmcSignalMode(Enabled: true, Logic: 0, Action: 0),
@@ -432,6 +433,82 @@ public class SmcAxisTests
     public void 停穩延時為負數_構造時拒絕()
     {
         Assert.Throws<ArgumentException>(() => CreateAxis(Options() with { SettleTime = TimeSpan.FromMilliseconds(-1) }));
+    }
+
+    [Fact]
+    public async Task 無反饋的軸_反饋位置為NaN且不讀編碼器()
+    {
+        using var axis = await EnabledAxisAsync();
+
+        var status = axis.GetStatus();
+
+        Assert.False(status.HasFeedback);
+        Assert.True(double.IsNaN(status.FollowingError));
+        Assert.DoesNotContain("smc_get_encoder_unit", _api.Calls);
+    }
+
+    [Fact]
+    public async Task 有編碼器的軸_狀態裡同時有指令位置和反饋位置()
+    {
+        using var axis = await EnabledAxisAsync(Options() with { Feedback = LeadshineFeedback.Encoder });
+        _api.Position = 100;
+        _api.EncoderOffset = -0.02;
+
+        var status = axis.GetStatus();
+
+        Assert.Equal(100, status.Position);
+        Assert.Equal(99.98, status.FeedbackPosition, 9);
+        Assert.Equal(0.02, status.FollowingError, 9);
+    }
+
+    [Fact]
+    public async Task 編碼器讀取失敗_狀態為報警()
+    {
+        using var axis = await EnabledAxisAsync(Options() with { Feedback = LeadshineFeedback.Encoder });
+        _api.ReturnCodes["smc_get_encoder_unit"] = 3;
+
+        var status = axis.GetStatus();
+
+        Assert.Equal(AxisState.Alarm, status.State);
+        Assert.Contains("smc_get_encoder_unit=3", status.AlarmReason);
+    }
+
+    [Fact]
+    public async Task 有編碼器的脈衝軸_回零後編碼器對齊到指令位置()
+    {
+        _api.EncoderOffset = 1234.5;   // 上電時編碼器計數是隨機值
+        using var axis = await EnabledAxisAsync(Options() with { Feedback = LeadshineFeedback.Encoder });
+
+        await axis.HomeAsync();
+
+        var status = axis.GetStatus();
+        Assert.True(status.IsHomed);
+        Assert.Equal(0, status.FeedbackPosition);
+        Assert.Contains("smc_set_encoder_unit", _api.Calls);
+    }
+
+    [Fact]
+    public async Task 編碼器對齊回讀不一致_回零不算完成()
+    {
+        _api.EncoderOffset = 1234.5;
+        _api.EncoderWriteIgnored = true;
+        using var axis = await EnabledAxisAsync(Options() with { Feedback = LeadshineFeedback.Encoder });
+
+        var ex = await Assert.ThrowsAsync<LeadshineCallException>(() => axis.HomeAsync());
+
+        Assert.Equal("smc_get_encoder_unit", ex.ApiName);
+        Assert.Contains("Expected=encoder=0, Actual=encoder=1234.5", ex.Message);
+        Assert.False(axis.GetStatus().IsHomed);
+    }
+
+    [Fact]
+    public async Task 無反饋的軸回零_不寫編碼器()
+    {
+        using var axis = await EnabledAxisAsync();
+
+        await axis.HomeAsync();
+
+        Assert.DoesNotContain("smc_set_encoder_unit", _api.Calls);
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition)

@@ -24,18 +24,22 @@ public class DmcAxisTests
     private readonly FakeDmcNativeApi _api = new();
     private readonly List<string> _log = [];
 
-    private DmcAxis CreateAxis(ushort axisNo = 0, TimeSpan? motionTimeout = null) => new(_api, new DmcAxisOptions
+    private DmcAxis CreateAxis(ushort axisNo = 0, TimeSpan? motionTimeout = null) =>
+        new(_api, CreateOptions(axisNo, motionTimeout), log: _log.Add);
+
+    private static DmcAxisOptions CreateOptions(ushort axisNo = 0, TimeSpan? motionTimeout = null) => new()
     {
         CardNo = 0,
         AxisNo = axisNo,
         Name = $"X{axisNo}",
         PulseEquivalent = 1000,
         InPositionSignal = LeadshineInpMode.Disabled,
+        Feedback = LeadshineFeedback.None,
         HomeProfile = new DmcHomeProfile(Mode: 17, LowVelocity: 5, HighVelocity: 20, AccelerationTime: 0.1,
             DecelerationTime: 0.1, Offset: 0),
         PollInterval = TimeSpan.FromMilliseconds(1),
         MotionTimeout = motionTimeout ?? TimeSpan.FromSeconds(5),
-    }, log: _log.Add);
+    };
 
     private async Task<DmcAxis> EnabledAxisAsync(TimeSpan? motionTimeout = null)
     {
@@ -380,6 +384,19 @@ public class DmcAxisTests
         await axis.MoveAbsoluteAsync(10, Profile);
 
         Assert.Equal(10, axis.GetStatus().Position);
+    }
+
+    [Fact]
+    public async Task 總線軸回零_不改寫編碼器_反饋由驅動器維護()
+    {
+        _api.EncoderOffset = 0.003;
+        using var axis = new DmcAxis(_api, CreateOptions() with { Feedback = LeadshineFeedback.Encoder }, log: _log.Add);
+        await axis.EnableAsync();
+
+        await axis.HomeAsync();
+
+        Assert.DoesNotContain("dmc_set_encoder_unit", _api.Calls);
+        Assert.Equal(0.003, axis.GetStatus().FeedbackPosition, 9);
     }
 
     private async Task WaitForCallAsync(string apiName)

@@ -41,6 +41,12 @@ internal abstract class FakeLeadshineMotionApi(string prefix) : ILeadshineMotion
 
     public Func<LeadshineInpMode, LeadshineInpMode>? InpReadback { get; set; }
 
+    /// <summary>編碼器 = 指令位置 + 偏差。上電時編碼器計數和指令位置不一致，用它模擬。</summary>
+    public double EncoderOffset { get; set; }
+
+    /// <summary>模擬 set_encoder_unit 調用成功但沒有生效。</summary>
+    public bool EncoderWriteIgnored { get; set; }
+
     public IReadOnlyList<string> Calls
     {
         get
@@ -188,6 +194,29 @@ internal abstract class FakeLeadshineMotionApi(string prefix) : ILeadshineMotion
         }
 
         return 0;
+    }
+
+    public short ReadFeedbackPosition(ushort cardNo, ushort axisNo, out double position)
+    {
+        lock (_sync)
+        {
+            position = Position + EncoderOffset;
+        }
+
+        return Record($"{prefix}_get_encoder_unit");
+    }
+
+    public short SetFeedbackPosition(ushort cardNo, ushort axisNo, double position)
+    {
+        if (!EncoderWriteIgnored)
+        {
+            lock (_sync)
+            {
+                EncoderOffset = position - Position;
+            }
+        }
+
+        return Record($"{prefix}_set_encoder_unit");
     }
 
     public short ReadAxisIoStatus(ushort cardNo, ushort axisNo, out uint status)

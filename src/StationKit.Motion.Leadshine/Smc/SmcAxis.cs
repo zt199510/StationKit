@@ -71,6 +71,18 @@ public sealed class SmcAxis : LeadshineAxisBase
 
     protected override short StartHome() => _api.HomeMove(Card, Axis);
 
+    /// <summary>
+    /// 回零後編碼器計數不一定跟著清零（取決於回零方式和計數源），這裡統一把編碼器對齊到指令位置，
+    /// 不依賴卡的行為。沿用舊代碼裡「反饋坐標清零」的做法。
+    /// </summary>
+    protected override void OnHomeCompleted()
+    {
+        if (_options.Feedback == LeadshineFeedback.Encoder)
+        {
+            AlignFeedbackToCommand("Home");
+        }
+    }
+
     protected override short ReadHomeResult(out ushort state) => _api.GetHomeResult(Card, Axis, out state);
 
     protected override async Task ResetAlarmCoreAsync(CancellationToken cancellationToken)

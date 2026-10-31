@@ -107,17 +107,24 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
         var positionResult = _api.ReadPosition(Card, Axis, out var position);
         var ioResult = _api.ReadAxisIoStatus(Card, Axis, out var rawIo);
         var done = _api.CheckDone(Card, Axis);
+        var feedback = double.NaN;
+        short feedbackResult = 0;
+        if (_options.Feedback == LeadshineFeedback.Encoder)
+        {
+            feedbackResult = _api.ReadFeedbackPosition(Card, Axis, out feedback);
+        }
+
         bool enabled, homed, homing;
         lock (_sync)
         {
             (enabled, homed, homing) = (_enabled, _homed, _homing);
         }
 
-        if (positionResult != 0 || ioResult != 0 || done is not (0 or 1))
+        if (positionResult != 0 || ioResult != 0 || done is not (0 or 1) || feedbackResult != 0)
         {
             return new AxisStatus(AxisState.Alarm, position, homed, false, false,
                 $"狀態讀取失敗：{Api("get_position_unit")}={positionResult}, {Api("axis_io_status")}={ioResult}, " +
-                $"{Api("check_done")}={done}");
+                $"{Api("check_done")}={done}, {Api("get_encoder_unit")}={feedbackResult}");
         }
 
         var io = LeadshineAxisIo.Parse(rawIo);
@@ -127,7 +134,7 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
             : homing ? AxisState.Homing
             : done == 0 ? AxisState.Moving
             : AxisState.Idle;
-        return new AxisStatus(state, position, homed, io.PositiveLimit, io.NegativeLimit, alarm);
+        return new AxisStatus(state, position, homed, io.PositiveLimit, io.NegativeLimit, alarm, feedback);
     }
 
     public async Task EnableAsync(CancellationToken cancellationToken = default)
@@ -316,6 +323,8 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
         {
             await WaitUntilAsync("Home", _options.HomeTimeout, _ => IsHomeFinished(), LimitWatch.Both,
                 cancellationToken).ConfigureAwait(false);
+            // 回零後處理（例如脈衝軸對齊編碼器），失敗則不算回零完成
+            OnHomeCompleted();
             lock (_sync)
             {
                 _homed = true;
@@ -445,6 +454,27 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
 
     /// <summary>讀取回零結果（1 表示本次回零完成），返回雷賽錯誤碼。</summary>
     protected abstract short ReadHomeResult(out ushort state);
+
+    /// <summary>回零完成、標記為已回零之前調用。拋出異常則本次回零不算完成。</summary>
+    protected virtual void OnHomeCompleted()
+    {
+    }
+
+    /// <summary>
+    /// 把反饋位置設為當前指令位置並回讀核對（容差一個脈衝）。
+    /// 用於回零後：脈衝軸的編碼器計數是上電時的隨機值，不對齊的話反饋位置和跟隨誤差都沒有意義。
+    /// </summary>
+    protected void AlignFeedbackToCommand(string stage)
+    {
+        var result = _api.ReadPosition(Card, Axis, out var command);
+        Guard.EnsureSuccess(Api("get_position_unit"), result, "read", stage, $"pos={command:R}");
+        Guard.EnsureSuccess(Api("set_encoder_unit"), _api.SetFeedbackPosition(Card, Axis, command),
+            $"encoder={command:R}", stage);
+        result = _api.ReadFeedbackPosition(Card, Axis, out var feedback);
+        Guard.EnsureSuccess(Api("get_encoder_unit"), result, $"encoder={command:R}", stage, $"encoder={feedback:R}");
+        Guard.EnsureReadback(Api("get_encoder_unit"), Math.Abs(feedback - command) <= 1 / _options.PulseEquivalent,
+            $"encoder={command:R}", $"encoder={feedback:R}", stage);
+    }
 
     /// <summary>清除伺服報警。在發令鎖內調用。</summary>
     protected abstract Task ResetAlarmCoreAsync(CancellationToken cancellationToken);

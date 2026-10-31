@@ -14,6 +14,12 @@ public abstract record LeadshineAxisOptions
     public required double PulseEquivalent { get; init; }
 
     /// <summary>
+    /// 反饋位置來源。必填：同一台機上有的軸有編碼器、有的沒有，
+    /// 沒有編碼器卻去讀，讀到的是 0 或上電隨機值，顯示出來會誤導人。
+    /// </summary>
+    public required LeadshineFeedback Feedback { get; init; }
+
+    /// <summary>
     /// 是否用 INP 判定到位。必填，沒有默認值：接沒接 INP 由現場接線決定，
     /// 猜「啟用」會永遠等不到到位，猜「不啟用」會以為檢查過了其實沒有。
     /// 不需要停穩的軸（上下料等）填 <see cref="LeadshineInpMode.Disabled"/>。

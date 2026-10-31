@@ -24,6 +24,7 @@ var x = controller.CreateAxis(new DmcAxisOptions
     AxisNo = 0,
     Name = "X",
     PulseEquivalent = 1000,               // 脈衝/mm
+    Feedback = LeadshineFeedback.Encoder,           // 必填：反饋位置來源（None / Encoder）
     InPositionSignal = LeadshineInpMode.Disabled,   // 必填：是否用 INP 判定到位
     SettleTime = TimeSpan.FromMilliseconds(50),     // 沒接 INP 時的停穩延時（可選，默認 0）
     HomeProfile = new DmcHomeProfile(Mode: 17, LowVelocity: 5, HighVelocity: 20,
@@ -50,6 +51,7 @@ var z = controller.CreateAxis(new SmcAxisOptions
     AxisNo = 2,
     Name = "Z",
     PulseEquivalent = 1000,
+    Feedback = LeadshineFeedback.Encoder,           // 回零後自動把編碼器對齊到指令位置
     InPositionSignal = new LeadshineInpMode(Enabled: true, Logic: 0),   // 啟用 INP：脈衝發完後等 INP 有效
     ServoOnLevel = 0,                     // SEVON 為 0 時使能 —— 按接線填，沒有默認值
     AlarmSignal = new SmcSignalMode(Enabled: true, Logic: 0, Action: 0),
@@ -89,6 +91,7 @@ await z.HomeAsync();                      // homemode / 回零速度 / 原點電
 | 已下發後取消 | 先 `stop` 減速停止，再拋出 `OperationCanceledException` |
 | 故障必須拋出 | 返回碼非零或回讀不一致拋 `LeadshineCallException`（帶 `ApiName`、`ReturnCode`）；運動中 ALM / EMG 立即停止 |
 | 速度參數 | 雷賽用加減速**時間**：`Tacc = v / a`，`Tdec = v / d` |
+| 指令 / 反饋位置 | `AxisStatus.Position` 是指令位置（`get_position_unit`），運動判定和相對運動起點都用它；`FeedbackPosition` 是編碼器位置（`get_encoder_unit`），`Feedback = None` 時為 NaN，不拿指令位置冒充；`FollowingError` = 指令 − 反饋 |
 | 到位判定 | `check_done == 1` 且指令位置在容差內（發現被提前停止）；`InPositionSignal` 啟用時，再等 INP 有效，超過 `InPositionTimeout` 報故障。未啟用 INP 時按 `SettleTime` 固定延時（默認 0），兩者不能同時配置。INP 配置不管啟不啟用都寫入並回讀，防止卡裡固化著舊設置 |
 | 限位判定 | 只盯運動方向上的限位（EL 和卡上軟限位）：停在負限位上往正方向走出來，不會誤報負限位 |
 | 點動 | `vmove` 速度模式；已在點動方向的限位上時拒絕，反方向允許（用於移出限位）；鬆開後 `stop` 減速，等 `check_done == 1` 停穩才返回；沒鬆開卻停了報故障；`JogTimeout` 兜底 |
@@ -102,6 +105,7 @@ await z.HomeAsync();                      // homemode / 回零速度 / 原點電
 | 使能 | `smc_write_sevon_pin` 寫 `ServoOnLevel`，等 `ServoSettleTime` 後 `smc_read_sevon_pin` 回讀，不一致即使能失敗；失能寫相反電平並回讀 |
 | 信號配置 | `smc_set_alm_mode`、`smc_set_el_mode` 每次啟動重新下發並回讀，不依賴控制卡裡固化（burn）的參數 |
 | 回零參數 | `homemode`、`home_profile_unit`、`home_pin_logic`、`home_position_unit` 四組逐一寫入回讀，任一不一致不回零 |
+| 編碼器對齊 | `Feedback = Encoder` 時，回零完成後把編碼器設為指令位置並回讀（容差一個脈衝），失敗則回零不算完成。DMC 總線軸由驅動器維護實際位置，不改寫 |
 | 報警復位 | 未配置 `AlarmReset` 時直接報故障，不假裝復位成功；配置了則先斷使能，再在 ERC 或通用輸出口上打一個有效電平脈衝（取消也保證撤銷），之後 ALM 必須在 `ClearTimeout` 內消失 |
 
 ## 上機前必須實機確認
@@ -113,6 +117,9 @@ await z.HomeAsync();                      // homemode / 回零速度 / 原點電
 - [ ] 脈衝當量：命令走 100 mm，用尺子量實際距離
 - [ ] 運動中拍急停、觸發限位、斷開通訊，確認都能報出故障
 - [ ] INP：驅動器的 INP 輸出是否接到卡上、有效電平；啟用後手動推軸偏離，確認 `axis_io_status` 第 8 位會變。DMC 總線軸的 INP 是否同樣反映在第 8 位，需要實機確認
+- [ ] 反饋位置比例：命令走 100 mm，看反饋是否也是 100 mm。不一致說明驅動器編碼器輸出分頻和電子齒輪不匹配，`encoder_unit` 和指令用的是同一個脈衝當量
+- [ ] 反饋方向：正向運動時反饋位置也要增大，反了要改驅動器的編碼器輸出方向
+- [ ] DMC 總線軸：回零後 `get_encoder_unit` 是否和指令位置一致（現在不改寫，依賴驅動器）
 - [ ] 沒接 INP 的軸：需要停穩的（拍照、加工）按實測配置 `SettleTime`，不需要的保持 0
 - [ ] `InPositionTimeout`：按驅動器整定後的實際停穩時間設置，太短會誤報，太長會掩蓋增益問題
 - [ ] `vmove` 的 `dir`：0 負方向、1 正方向，與電機實際轉向、坐標正方向一致（先低速點一下）

@@ -164,6 +164,21 @@ public class SimAxisTests
         await first;
     }
 
+    [Fact]
+    public async Task 模擬軸是理想伺服_反饋位置等於指令位置()
+    {
+        var axis = await EnabledAxisAsync();
+
+        var move = axis.MoveAbsoluteAsync(100, Profile);
+        _time.Advance(TimeSpan.FromSeconds(0.55));
+
+        var status = axis.GetStatus();
+        Assert.Equal(status.Position, status.FeedbackPosition);
+        Assert.Equal(0, status.FollowingError);
+        _time.Advance(TimeSpan.FromSeconds(1));
+        await move;
+    }
+
     private async Task HomeAsync(SimAxis axis)
     {
         var home = axis.HomeAsync();

@@ -24,16 +24,28 @@ public enum JogDirection
     Positive = 1,
 }
 
-/// <summary>軸狀態快照。值類型，讀取後不會被其他線程改變。</summary>
+/// <summary>
+/// 軸狀態快照。值類型，讀取後不會被其他線程改變。
+/// <para>
+/// <see cref="Position"/> 是<b>指令位置</b>（規劃器發出去的位置），運動判定和相對運動的起點都用它；
+/// <see cref="FeedbackPosition"/> 是<b>反饋位置</b>（編碼器），軸沒有反饋時為 NaN。
+/// </para>
+/// </summary>
 public readonly record struct AxisStatus(
     AxisState State,
     double Position,
     bool IsHomed,
     bool PositiveLimit,
     bool NegativeLimit,
-    string? AlarmReason)
+    string? AlarmReason,
+    double FeedbackPosition = double.NaN)
 {
     public bool IsEnabled => State is not AxisState.Disabled and not AxisState.Alarm;
+
+    public bool HasFeedback => !double.IsNaN(FeedbackPosition);
+
+    /// <summary>跟隨誤差 = 指令位置 − 反饋位置；沒有反饋時為 NaN。</summary>
+    public double FollowingError => Position - FeedbackPosition;
 }
 
 /// <summary>運動參數（單位由軸配置決定，通常為 mm、mm/s、mm/s²）。</summary>

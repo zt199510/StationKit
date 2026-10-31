@@ -51,7 +51,9 @@ public sealed class SimAxis : IAxis, IAxisSafetyPort
     {
         lock (_sync)
         {
-            return new(_state, CurrentPositionLocked(), _homed, _positiveLimit, _negativeLimit, _alarm);
+            // 模擬理想伺服：反饋位置等於指令位置
+            var position = CurrentPositionLocked();
+            return new(_state, position, _homed, _positiveLimit, _negativeLimit, _alarm, position);
         }
     }
 

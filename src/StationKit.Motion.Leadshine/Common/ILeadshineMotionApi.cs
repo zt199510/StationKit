@@ -15,6 +15,16 @@ public enum LeadshineStopMode : ushort
 /// <summary>軟限位參數（對應 dmc_set_softlimit_unit / smc_set_softlimit_unit）。</summary>
 public readonly record struct LeadshineSoftLimit(bool Enabled, ushort Source, ushort Action, double Negative, double Positive);
 
+/// <summary>反饋位置來源。</summary>
+public enum LeadshineFeedback
+{
+    /// <summary>沒有反饋（開環步進，或編碼器沒有接到卡上）：反饋位置為 NaN，不能拿指令位置冒充。</summary>
+    None,
+
+    /// <summary>編碼器反饋接到卡上：用 encoder_unit 讀取。</summary>
+    Encoder,
+}
+
 /// <summary>
 /// INP 到位信號配置（對應 dmc_set_inp_mode / smc_set_inp_mode）。
 /// Logic：0 低電平有效、1 高電平有效，按驅動器 INP 輸出的接線填寫。
@@ -66,6 +76,12 @@ public interface ILeadshineMotionApi
     short EmergencyStop(ushort cardNo);
 
     short ReadPosition(ushort cardNo, ushort axisNo, out double position);
+
+    /// <summary>讀反饋位置（編碼器，單位與脈衝當量一致）。</summary>
+    short ReadFeedbackPosition(ushort cardNo, ushort axisNo, out double position);
+
+    /// <summary>設置反饋位置計數值，用於回零後把編碼器和指令位置對齊。</summary>
+    short SetFeedbackPosition(ushort cardNo, ushort axisNo, double position);
 
     short ReadAxisIoStatus(ushort cardNo, ushort axisNo, out uint status);
 }

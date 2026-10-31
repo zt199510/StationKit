@@ -106,6 +106,15 @@ public sealed class DmcNativeApi : IDmcNativeApi
         return NativeMethods.dmc_get_position_unit(cardNo, axisNo, ref position);
     }
 
+    public short ReadFeedbackPosition(ushort cardNo, ushort axisNo, out double position)
+    {
+        position = 0;
+        return NativeMethods.dmc_get_encoder_unit(cardNo, axisNo, ref position);
+    }
+
+    public short SetFeedbackPosition(ushort cardNo, ushort axisNo, double position) =>
+        NativeMethods.dmc_set_encoder_unit(cardNo, axisNo, position);
+
     public short ReadAxisIoStatus(ushort cardNo, ushort axisNo, out uint status)
     {
         // dmc_axis_io_status 直接返回狀態字，沒有錯誤碼
