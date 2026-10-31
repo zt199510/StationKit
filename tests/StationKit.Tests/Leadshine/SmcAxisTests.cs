@@ -491,7 +491,7 @@ public sealed class SmcAxisTests : IDisposable
     }
 
     [Fact]
-    public async Task 編碼器讀取失敗_狀態為報警()
+    public async Task 編碼器讀取返回錯誤碼_整卡故障_狀態為報警()
     {
         using var axis = await EnabledAxisAsync(Options() with { Feedback = LeadshineFeedback.Encoder });
         _api.ReturnCodes["smc_get_encoder_unit"] = 3;
@@ -499,7 +499,8 @@ public sealed class SmcAxisTests : IDisposable
         var status = Status(axis);
 
         Assert.Equal(AxisState.Alarm, status.State);
-        Assert.Contains("smc_get_encoder_unit=3", status.AlarmReason);
+        Assert.Contains("get_encoder_unit=3", status.AlarmReason);
+        Assert.Contains("本卡所有軸禁止操作", status.AlarmReason);
     }
 
     [Fact]

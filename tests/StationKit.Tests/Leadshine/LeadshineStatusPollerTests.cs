@@ -78,28 +78,6 @@ public sealed class LeadshineStatusPollerTests : IDisposable
     }
 
     [Fact]
-    public void 一根軸讀取異常_其他軸照常輪詢_只記錄一次報警_恢復時記錄()
-    {
-        using var x = CreateAxis(0);
-        using var y = CreateAxis(1);
-        _api.ThrowOnRead = axis => axis == 1;
-
-        _poller.RefreshOnce();
-        _poller.RefreshOnce();
-        _poller.RefreshOnce();
-
-        Assert.Equal(3, _poller.GetSnapshot(0)!.Cycle);
-        Assert.Null(_poller.GetSnapshot(1));
-        Assert.Single(Logs(), line => line.StartsWith("[報警] DMC 輪詢：CardId=0, AxisIndex=1", StringComparison.Ordinal));
-
-        _api.ThrowOnRead = null;
-        _poller.RefreshOnce();
-
-        Assert.Equal(4, _poller.GetSnapshot(1)!.Cycle);
-        Assert.Contains(Logs(), line => line.Contains("AxisIndex=1, Stage=Poll, 狀態讀取已恢復"));
-    }
-
-    [Fact]
     public void 同一根軸創建兩個對象_拒絕_釋放後可以重新創建()
     {
         var first = CreateAxis(0);

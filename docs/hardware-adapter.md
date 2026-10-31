@@ -100,7 +100,7 @@ controller.Poller.StatsInterval = TimeSpan.FromSeconds(10);   // 週期統計日
 |---|---|
 | 下發後的等待 | 只接受下發之後才開始讀取的快照（週期號大於圍欄），舊的「已停止」不會被當成到位 |
 | 快照過期 | 超過 `staleTimeout` 未更新：`GetStatus()` 返回 `Alarm`（位置保留最後讀到的值）；等待中的運動先停軸再報故障；不會下發新運動 |
-| 單軸讀取異常 | 只記一次 `[報警]`，恢復時記一次；其他軸照常讀；持續失敗表現為該軸快照過期 |
+| 讀取失敗 | 任何一根軸讀取拋異常或返回錯誤碼：整卡故障，停止讀取，記一次 `[報警]`；本卡所有軸 `Alarm`，除停止、急停外所有操作被拒絕，等待中的運動立即停軸報故障。排查後調用 `controller.Poller.ResetFault()` 恢復，本卡所有軸需重新使能並回零 |
 | 週期統計 | `Cycles / AvgMs / MaxMs / MaxGapMs / Overruns`；有讀取超週期時以 `[警告]` 輸出 |
 | 計時精度 | Windows 下運行期間 `timeBeginPeriod(1)`，停止時恢復 |
 

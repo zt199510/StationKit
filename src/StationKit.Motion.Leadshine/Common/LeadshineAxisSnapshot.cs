@@ -20,6 +20,9 @@ public sealed record LeadshineAxisSnapshot(
 {
     public bool ReadFailed => PositionResult != 0 || FeedbackResult != 0 || Done is not (0 or 1);
 
+    internal string DescribeReadFailure() =>
+        $"get_position_unit={PositionResult}, check_done={Done}, get_encoder_unit={FeedbackResult}";
+
     /// <summary>
     /// 讀一根軸的狀態。調用方必須持有卡鎖，保證這幾個值是同一時刻的（中間不會插進其他調用）。
     /// axis_io_status 直接返回狀態字，沒有錯誤碼。

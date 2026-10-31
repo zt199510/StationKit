@@ -6,7 +6,7 @@ using StationKit.Motion.Leadshine.Dmc;
 namespace StationKit.Tests.Leadshine;
 
 /// <summary>
-/// 快照過期（docs/design/central-polling.md 4.2）：輪詢停了或某根軸一直讀取失敗，
+/// 快照過期（docs/design/central-polling.md 4.2）：輪詢線程停了，
 /// 快照凍結在最後一刻，不能被當成「靜止、正常」。用假時鐘手動推進，不依賴真實時間。
 /// </summary>
 public sealed class LeadshineStaleStatusTests : IDisposable
@@ -71,27 +71,6 @@ public sealed class LeadshineStaleStatusTests : IDisposable
         _time.Advance(StaleTimeout + TimeSpan.FromMilliseconds(1));
         var ex = await Assert.ThrowsAsync<MotionFaultException>(() => move);
 
-        Assert.Contains("過期", ex.Reason, StringComparison.Ordinal);
-        Assert.Equal("dmc_stop", _api.Calls[^1]);
-    }
-
-    [Fact]
-    public async Task 運動中本軸一直讀取失敗_其他輪照常完成_等待不會卡死()
-    {
-        using var axis = CreateAxis();
-        await EnableWithOneCycleAsync(axis);
-        _poller.RefreshOnce();
-        var move = axis.MoveAbsoluteAsync(10, Profile);
-
-        // 輪詢還在跑、週期照常完成，只是這根軸的快照不再更新
-        _api.ThrowOnRead = axisNo => axisNo == 0;
-        for (var i = 0; i < 3; i++)
-        {
-            _poller.RefreshOnce();
-            _time.Advance(TimeSpan.FromMilliseconds(60));
-        }
-
-        var ex = await Assert.ThrowsAsync<MotionFaultException>(() => move);
         Assert.Contains("過期", ex.Reason, StringComparison.Ordinal);
         Assert.Equal("dmc_stop", _api.Calls[^1]);
     }

@@ -87,7 +87,8 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
 
         // 所有校驗通過後才註冊，避免構造失敗的軸留在輪詢列表裡。
         // 報警詳情由輪詢在持卡鎖時讀取；子類構造體尚未執行完時被調用會拋異常，輪詢器會兜住並給出通用描述
-        poller.Register(options.AxisNo, options.Feedback == LeadshineFeedback.Encoder, DescribeServoAlarm);
+        poller.Register(options.AxisNo, options.Feedback == LeadshineFeedback.Encoder, DescribeServoAlarm,
+            OnCardFault);
         _fence = poller.CurrentCycle;
     }
 
@@ -110,6 +111,7 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
     /// </summary>
     public void ApplyBaseParameters()
     {
+        EnsureCardHealthy();
         const string stage = "BaseParameters";
         var equiv = _options.PulseEquivalent;
         if (!double.IsFinite(equiv) || equiv <= 0)
@@ -140,6 +142,13 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
     public AxisStatus GetStatus()
     {
         var snapshot = _poller.GetSnapshot(Axis);
+        if (_poller.Fault is { } fault)
+        {
+            // 卡故障優先：快照停在故障前，位置僅供界面參考
+            return new AxisStatus(AxisState.Alarm, snapshot?.Command ?? double.NaN, false, false, false,
+                CardFaultReason(fault), snapshot?.Feedback ?? double.NaN);
+        }
+
         if (snapshot == null)
         {
             bool homed;
@@ -185,6 +194,7 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
 
     public async Task DisableAsync(CancellationToken cancellationToken = default)
     {
+        EnsureCardHealthy();
         // 先停再失能：直接斷使能，垂直軸可能下墜
         await StopAsync().ConfigureAwait(false);
         await _motionCommandGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
@@ -436,6 +446,7 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
 
     public async Task ResetAlarmAsync(CancellationToken cancellationToken = default)
     {
+        EnsureCardHealthy();
         await _motionCommandGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -459,6 +470,7 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
     {
         ArgumentNullException.ThrowIfNull(config);
         cancellationToken.ThrowIfCancellationRequested();
+        EnsureCardHealthy();
         if (config.EmergencyStopEnabled && config.EmergencyStopActiveHigh is null)
         {
             // 急停電平不猜默認值
@@ -490,6 +502,7 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
     public Task<AxisSafetyConfig> ReadSafetyConfigAsync(CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        EnsureCardHealthy();
         const string stage = "SafetyReadback";
         AxisSafetyConfig written;
         lock (_sync)
@@ -604,7 +617,7 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
 
     /// <summary>
     /// 等一個週期號大於 <paramref name="afterCycle"/> 的快照。本軸在某一輪讀取異常時，繼續等下一輪。
-    /// 快照過期（輪詢停了，或本軸一直讀取失敗）時報故障，不會一直等下去，也不會返回過期的數據。
+    /// 卡故障、快照過期（輪詢停了或卡住）時報故障，不會一直等下去，也不會返回過期的數據。
     /// </summary>
     protected async Task<(AxisStatus Status, LeadshineAxisSnapshot Snapshot)> NextAsync(long afterCycle,
         CancellationToken cancellationToken)
@@ -613,13 +626,14 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
         var waitAfter = afterCycle;
         while (true)
         {
+            EnsureCardHealthy();
             var snapshot = _poller.GetSnapshot(Axis);
             // 先判斷過期再判斷圍欄：晚於圍欄但已經很舊的快照同樣不可信。還沒有快照時從開始等待算起
             var age = snapshot != null ? _poller.AgeOf(snapshot) : _poller.Time.GetElapsedTime(waitStart);
             if (age > _poller.StaleTimeout)
             {
                 throw new MotionFaultException(Name, snapshot != null ? StaleReason(age)
-                    : $"{_poller.StaleTimeout.TotalMilliseconds:0} ms 內沒有狀態數據（輪詢未啟動或本軸讀取一直失敗）");
+                    : $"{_poller.StaleTimeout.TotalMilliseconds:0} ms 內沒有狀態數據（輪詢未啟動）");
             }
 
             if (snapshot != null && snapshot.Cycle > afterCycle)
@@ -639,9 +653,30 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
         }
     }
 
+    /// <summary>卡故障時拒絕操作。停止和急停不經過這裡，故障時仍然可用。</summary>
+    private void EnsureCardHealthy()
+    {
+        if (_poller.Fault is { } fault)
+        {
+            throw new MotionFaultException(Name, CardFaultReason(fault));
+        }
+    }
+
+    private static string CardFaultReason(string fault) => $"{fault}，本卡所有軸禁止操作（停止除外），排查後需復位輪詢器";
+
+    /// <summary>卡故障期間發生了什麼不可知，復位後必須重新使能並回零。</summary>
+    private void OnCardFault()
+    {
+        lock (_sync)
+        {
+            _enabled = false;
+            _homed = false;
+        }
+    }
+
     private string StaleReason(TimeSpan age) =>
         $"狀態數據過期：{age.TotalMilliseconds:0} ms 未更新（上限 {_poller.StaleTimeout.TotalMilliseconds:0} ms），" +
-        "輪詢可能已停止或本軸讀取一直失敗";
+        "輪詢可能已停止或卡住";
 
     /// <summary>反映了最後一條指令的狀態：最新快照已經晚於圍欄就直接用，否則等下一輪。</summary>
     private async Task<AxisStatus> FreshStatusAsync(CancellationToken cancellationToken) =>
@@ -653,13 +688,6 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
         lock (_sync)
         {
             (enabled, homed, homing) = (_enabled, _homed, _homing);
-        }
-
-        if (snapshot.ReadFailed)
-        {
-            return new AxisStatus(AxisState.Alarm, snapshot.Command, homed, false, false,
-                $"狀態讀取失敗：{Api("get_position_unit")}={snapshot.PositionResult}, " +
-                $"{Api("check_done")}={snapshot.Done}, {Api("get_encoder_unit")}={snapshot.FeedbackResult}");
         }
 
         var io = LeadshineAxisIo.Parse(snapshot.Io);
@@ -790,7 +818,7 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
                 }
                 catch (MotionFaultException)
                 {
-                    // 狀態過期：軸可能還在走而我們看不到，先停軸再報故障
+                    // 狀態過期或卡故障：軸可能還在走而我們看不到，先停軸再報故障
                     await StopAsync().ConfigureAwait(false);
                     throw;
                 }

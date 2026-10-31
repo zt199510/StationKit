@@ -19,7 +19,9 @@ public static class AxisExtensions
         var status = axis.GetStatus();
         if (status.State != AxisState.Idle)
         {
-            throw new MotionRejectedException(axis.Name, $"相對運動要求軸靜止，當前狀態 {status.State}");
+            // 報警時帶上原因，操作員才知道為什麼不能動
+            var reason = status.AlarmReason is { } alarm ? $"（{alarm}）" : "";
+            throw new MotionRejectedException(axis.Name, $"相對運動要求軸靜止，當前狀態 {status.State}{reason}");
         }
 
         return axis.MoveAbsoluteAsync(status.Position + distance, profile, cancellationToken);

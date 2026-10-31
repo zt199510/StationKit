@@ -12,6 +12,10 @@ namespace StationKit.Motion.Leadshine;
 /// <para>
 /// 後台輪詢用專用線程，不佔線程池；每隔 <see cref="StatsInterval"/> 記錄一次週期統計，上機時據此確定週期。
 /// </para>
+/// <para>
+/// 任何一根軸讀取失敗（DLL 拋異常或返回錯誤碼），整張卡進入故障：停止讀取，本卡所有軸禁止操作（停止、急停除外），
+/// 直到排查後調用 <see cref="ResetFault"/>。
+/// </para>
 /// 設計說明見 docs/design/central-polling.md。
 /// </summary>
 public sealed class LeadshineStatusPoller : IDisposable
@@ -31,7 +35,6 @@ public sealed class LeadshineStatusPoller : IDisposable
     private readonly object _refreshSync = new();
     private readonly object _registrationSync = new();
     private readonly ConcurrentDictionary<ushort, LeadshineAxisSnapshot> _snapshots = new();
-    private readonly HashSet<ushort> _failingAxes = [];
     private Registration[] _axes = [];
     private long _cycle;
     private long _completedCycle;
@@ -39,6 +42,7 @@ public sealed class LeadshineStatusPoller : IDisposable
     private CancellationTokenSource? _loopCts;
     private Thread? _thread;
     private TimeSpan _statsInterval = TimeSpan.FromSeconds(10);
+    private volatile string? _fault;
 
     /// <param name="api">原始 SDK，輪詢器內部用 <see cref="Gate"/> 加鎖調用。</param>
     /// <param name="family">日誌裡的系列名，DMC 或 SMC。</param>
@@ -65,7 +69,7 @@ public sealed class LeadshineStatusPoller : IDisposable
 
     /// <summary>
     /// 快照超過這個時間沒有更新，狀態報 Alarm，等待中的運動報故障。
-    /// 輪詢線程停了、或某根軸一直讀取失敗，都會表現為快照不再更新。
+    /// 用來發現輪詢線程停了或卡住（讀取失敗另有卡故障處理，見 <see cref="Fault"/>）。
     /// </summary>
     public TimeSpan StaleTimeout { get; }
 
@@ -83,6 +87,9 @@ public sealed class LeadshineStatusPoller : IDisposable
 
     public bool IsRunning => _thread is { IsAlive: true };
 
+    /// <summary>卡故障原因；正常時為 null。故障期間不再讀取，本卡所有軸禁止操作（停止、急停除外）。</summary>
+    public string? Fault => _fault;
+
     /// <summary>週期統計日誌的間隔，在 <see cref="Start"/> 之前設置。調試時可以縮短。</summary>
     public TimeSpan StatsInterval
     {
@@ -99,26 +106,59 @@ public sealed class LeadshineStatusPoller : IDisposable
         }
     }
 
-    /// <summary>讀一輪：所有已註冊的軸各讀一次。可以和後台循環並存，兩者互斥執行。</summary>
+    /// <summary>
+    /// 讀一輪：所有已註冊的軸各讀一次。可以和後台循環並存，兩者互斥執行。
+    /// 卡故障時不讀取；本輪中途出現讀取失敗，後面的軸也不再讀。
+    /// </summary>
     public void RefreshOnce()
     {
         lock (_refreshSync)
         {
+            if (_fault != null)
+            {
+                return;
+            }
+
             var cycle = Interlocked.Increment(ref _cycle);
             foreach (var axis in Volatile.Read(ref _axes))
             {
-                RefreshAxis(axis, cycle);
+                if (!RefreshAxis(axis, cycle))
+                {
+                    // 故障時不更新完成號，只喚醒等待方，讓它們看到故障後立即退出
+                    WakeWaiters();
+                    return;
+                }
             }
 
             // 先更新完成號，再喚醒等待方：等待方被喚醒後一定能看到新的完成號
             Interlocked.Exchange(ref _completedCycle, cycle);
-            Interlocked.Exchange(ref _cycleCompleted, NewSignal()).TrySetResult();
+            WakeWaiters();
         }
+    }
+
+    /// <summary>
+    /// 排查完讀取故障後手動復位，恢復輪詢。本卡所有軸需要重新使能並回零。
+    /// 故障原因仍在時，下一輪會再次進入故障。
+    /// </summary>
+    public void ResetFault()
+    {
+        lock (_refreshSync)
+        {
+            if (_fault == null)
+            {
+                return;
+            }
+
+            _fault = null;
+        }
+
+        Log("Stage=Poll, 卡故障已手動復位，恢復輪詢；本卡所有軸需重新使能並回零");
     }
 
     /// <summary>
     /// 等到週期號大於 <paramref name="afterCycle"/> 的一輪讀完，返回讀完的週期號。
     /// <paramref name="timeout"/> 內沒有等到則拋 <see cref="TimeoutException"/>。
+    /// 卡故障時立即返回，由調用方檢查 <see cref="Fault"/>。
     /// </summary>
     public async Task<long> WaitForCycleAsync(long afterCycle, TimeSpan timeout, CancellationToken cancellationToken)
     {
@@ -128,7 +168,7 @@ public sealed class LeadshineStatusPoller : IDisposable
             // 先取信號再判斷：判斷之後才完成的那一輪一定會設置這個信號，不會漏掉
             var signal = Volatile.Read(ref _cycleCompleted);
             var completed = CompletedCycle;
-            if (completed > afterCycle)
+            if (completed > afterCycle || _fault != null)
             {
                 return completed;
             }
@@ -210,7 +250,9 @@ public sealed class LeadshineStatusPoller : IDisposable
     public void Dispose() => Stop();
 
     /// <param name="describeAlarm">ALM 有效時在輪詢中調用（持卡鎖），讀出報警詳情存進快照。</param>
-    internal void Register(ushort axisNo, bool readFeedback, Func<string>? describeAlarm = null)
+    /// <param name="onCardFault">卡進入故障時調用，軸據此作廢使能和原點狀態。</param>
+    internal void Register(ushort axisNo, bool readFeedback, Func<string>? describeAlarm = null,
+        Action? onCardFault = null)
     {
         lock (_registrationSync)
         {
@@ -220,7 +262,7 @@ public sealed class LeadshineStatusPoller : IDisposable
             }
 
             // 寫時複製：輪詢循環拿到的數組不會在遍歷中被修改
-            Volatile.Write(ref _axes, [.. _axes, new Registration(axisNo, readFeedback, describeAlarm)]);
+            Volatile.Write(ref _axes, [.. _axes, new Registration(axisNo, readFeedback, describeAlarm, onCardFault)]);
         }
     }
 
@@ -314,11 +356,12 @@ public sealed class LeadshineStatusPoller : IDisposable
         }
     }
 
-    private void RefreshAxis(Registration axis, long cycle)
+    /// <summary>讀一根軸。讀取失敗時卡進入故障，返回 false。</summary>
+    private bool RefreshAxis(Registration axis, long cycle)
     {
+        LeadshineAxisSnapshot snapshot;
         try
         {
-            LeadshineAxisSnapshot snapshot;
             // 同一根軸的幾個值在一次持鎖內讀完，中間不會插進運動指令
             lock (Gate.Sync)
             {
@@ -329,22 +372,38 @@ public sealed class LeadshineStatusPoller : IDisposable
                     snapshot = snapshot with { AlarmDetail = DescribeAlarm(axis) };
                 }
             }
-
-            _snapshots[axis.AxisNo] = snapshot;
-            if (_failingAxes.Remove(axis.AxisNo))
-            {
-                Log($"AxisIndex={axis.AxisNo}, Stage=Poll, 狀態讀取已恢復");
-            }
         }
         catch (Exception ex)
         {
-            // 一根軸讀取異常不能結束整個輪詢，其他軸照常讀；只在第一次出錯時記錄，避免每週期刷屏
-            if (_failingAxes.Add(axis.AxisNo))
-            {
-                Log($"AxisIndex={axis.AxisNo}, Stage=Poll, 狀態讀取異常：{ex.GetType().Name}: {ex.Message}", "[報警] ");
-            }
+            EnterFault(axis.AxisNo, $"{ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
+
+        if (snapshot.ReadFailed)
+        {
+            EnterFault(axis.AxisNo, snapshot.DescribeReadFailure());
+            return false;
+        }
+
+        _snapshots[axis.AxisNo] = snapshot;
+        return true;
+    }
+
+    /// <summary>
+    /// 讀取失敗說明通訊或卡本身出了問題，同一張卡上其他軸的數據也不可信：
+    /// 停止讀取，本卡所有軸禁止操作，等人工排查後復位。
+    /// </summary>
+    private void EnterFault(ushort axisNo, string detail)
+    {
+        _fault = $"卡{CardNo} 軸 {axisNo} 狀態讀取失敗（{detail}）";
+        Log($"AxisIndex={axisNo}, Stage=Poll, 狀態讀取失敗，停止輪詢，本卡所有軸禁止操作：{detail}", "[報警] ");
+        foreach (var axis in Volatile.Read(ref _axes))
+        {
+            axis.OnCardFault?.Invoke();
         }
     }
+
+    private void WakeWaiters() => Interlocked.Exchange(ref _cycleCompleted, NewSignal()).TrySetResult();
 
     private static string DescribeAlarm(Registration axis)
     {
@@ -364,7 +423,8 @@ public sealed class LeadshineStatusPoller : IDisposable
     private void Log(string message, string prefix = "") =>
         _log?.Invoke($"{prefix}{_family} 輪詢：CardId={CardNo}, {message}");
 
-    private sealed record Registration(ushort AxisNo, bool ReadFeedback, Func<string>? DescribeAlarm);
+    private sealed record Registration(ushort AxisNo, bool ReadFeedback, Func<string>? DescribeAlarm,
+        Action? OnCardFault);
 
     /// <summary>
     /// 一段時間內的週期統計。耗時（Avg/Max）是讀一輪所用的時間；
