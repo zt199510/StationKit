@@ -24,6 +24,8 @@
 
 很多項目的 `MoveAsync` 在指令下發後就返回，然後在業務代碼裡到處輪詢 `IsDone`。這導致「等待到位」的邏輯分散在各處，超時和報警處理也各寫各的。StationKit 規定運動方法在到位時完成，在報警時拋出 `MotionFaultException`，業務代碼只需要 `await`。
 
+下發和等待可以分開：不 `await` 就是只下發，之後再 `await` 返回的 `Task`。多軸同時運動用 `MotionGroup.MoveAllAsync`，不要直接 `Task.WhenAll`：`WhenAll` 會等所有軸各自走完才報故障，X 已經報警了，Y 還在往目標走。`MotionGroup` 在任何一軸故障時立即停下其餘軸，只拋出引發停止的那個故障。
+
 ### 2. 取消不能晚於下發
 
 `MoveAbsoluteAsync` 在持鎖狀態下先檢查取消令牌，再下發指令。否則會出現這種事故：操作員按下停止，緊接著一條已經「被取消」的運動指令還是下發到了控制卡。指令一旦下發，取消就會先停軸，再拋出 `OperationCanceledException`。
