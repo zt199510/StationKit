@@ -29,6 +29,12 @@ public static class SafetyConfigValidator
             errors.Add($"{axis}：最大加速度未配置或非法（{config.MaxAcceleration}）");
         }
 
+        if (!double.IsNaN(config.UnhomedJogMaxVelocity) &&
+            !(config.UnhomedJogMaxVelocity > 0 && config.UnhomedJogMaxVelocity <= config.MaxVelocity))
+        {
+            errors.Add($"{axis}：未回零點動速度 {config.UnhomedJogMaxVelocity} 必須大於 0 且不超過最大速度");
+        }
+
         if (config.EmergencyStopEnabled && config.EmergencyStopActiveHigh is null)
         {
             errors.Add($"{axis}：已啟用急停，但未指定急停有效電平");

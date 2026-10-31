@@ -162,20 +162,14 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
             throw new ArgumentException($"目標位置非法：{position}", nameof(position));
         }
 
-        // 雷賽用加減速時間，不是加速度
-        var tacc = profile.Velocity / profile.Acceleration;
-        var tdec = profile.Velocity / profile.Deceleration;
-        var minVelocity = Math.Min(_options.MinVelocity, profile.Velocity);
-        var stopVelocity = Math.Min(_options.StopVelocity, profile.Velocity);
-
+        LimitWatch limits;
         await _motionCommandGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            EnsureReadyForMotion();
-            Guard.EnsureSuccess(Api("set_profile_unit"),
-                _api.SetProfile(Card, Axis, minVelocity, profile.Velocity, tacc, tdec, stopVelocity),
-                $"min={minVelocity:R}, max={profile.Velocity:R}, tacc={tacc:R}, tdec={tdec:R}, stop={stopVelocity:R}",
-                "Move");
+            var start = EnsureReadyForMotion().Position;
+            // 只盯運動方向上的限位：停在負限位上往正方向走出來，不能誤報負限位
+            limits = new LimitWatch(Positive: position > start, Negative: position < start);
+            ApplyProfile(profile, "Move");
 
             // 取消檢查放在下發前最後一步：取消完成後不能再有運動指令下發
             cancellationToken.ThrowIfCancellationRequested();
@@ -187,7 +181,7 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
             _motionCommandGate.Release();
         }
 
-        await WaitUntilAsync("Move", _options.MotionTimeout, status => status.State == AxisState.Idle,
+        await WaitUntilAsync("Move", _options.MotionTimeout, status => status.State == AxisState.Idle, limits,
             cancellationToken).ConfigureAwait(false);
 
         var actual = GetStatus().Position;
@@ -212,6 +206,52 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
         {
             _motionCommandGate.Release();
         }
+    }
+
+    /// <summary>
+    /// 速度模式點動（vmove）。鬆開（取消）時減速停止，等 check_done 確認停穩後正常完成。
+    /// 已在點動方向的限位上時拒絕；反方向可以點動，用於把軸從限位上移出來。
+    /// </summary>
+    public async Task JogAsync(JogDirection direction, MotionProfile profile, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+        profile.Validate();
+        var positive = direction == JogDirection.Positive;
+        var side = positive ? "正" : "負";
+        try
+        {
+            await _motionCommandGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var status = EnsureReadyForMotion();
+                if (positive ? status.PositiveLimit : status.NegativeLimit)
+                {
+                    throw new MotionFaultException(Name, $"已在{side}限位上，不能繼續{side}向點動");
+                }
+
+                ApplyProfile(profile, "Jog");
+                // 同運動一樣，下發前最後檢查：已經鬆開就不再下發
+                cancellationToken.ThrowIfCancellationRequested();
+                Guard.EnsureSuccess(Api("vmove"), _api.MoveContinuous(Card, Axis, direction),
+                    $"dir={(positive ? 1 : 0)}, v={profile.Velocity:R}", "Jog");
+            }
+            finally
+            {
+                _motionCommandGate.Release();
+            }
+
+            await WaitUntilAsync("Jog", _options.JogTimeout, status => status.State == AxisState.Idle,
+                new LimitWatch(positive, !positive), cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // 鬆開按鈕：已下發的話 WaitUntilAsync 已發出減速停止，這裡等軸真正停下來
+            await WaitStoppedAsync("Jog").ConfigureAwait(false);
+            return;
+        }
+
+        // 沒鬆開卻停了：被外部停止或控制卡自己停的，不能當作正常結束
+        throw new MotionFaultException(Name, "點動中軸被停止（未鬆開按鈕）");
     }
 
     public async Task HomeAsync(CancellationToken cancellationToken = default)
@@ -242,8 +282,8 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
 
         try
         {
-            await WaitUntilAsync("Home", _options.HomeTimeout, _ => IsHomeFinished(), cancellationToken)
-                .ConfigureAwait(false);
+            await WaitUntilAsync("Home", _options.HomeTimeout, _ => IsHomeFinished(), LimitWatch.Both,
+                cancellationToken).ConfigureAwait(false);
             lock (_sync)
             {
                 _homed = true;
@@ -390,18 +430,61 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
     protected static string Describe(LeadshineSoftLimit s) =>
         $"enable={s.Enabled}, source={s.Source}, action={s.Action}, n={s.Negative:R}, p={s.Positive:R}";
 
-    private void EnsureReadyForMotion()
+    private AxisStatus EnsureReadyForMotion()
     {
         var status = GetStatus();
-        switch (status.State)
+        return status.State switch
         {
-            case AxisState.Alarm:
-                throw new MotionFaultException(Name, $"報警中：{status.AlarmReason}");
-            case AxisState.Disabled:
-                throw new MotionFaultException(Name, "未使能");
-            case AxisState.Moving or AxisState.Homing:
-                throw new MotionFaultException(Name, "軸正在運動");
+            AxisState.Alarm => throw new MotionFaultException(Name, $"報警中：{status.AlarmReason}"),
+            AxisState.Disabled => throw new MotionFaultException(Name, "未使能"),
+            AxisState.Moving or AxisState.Homing => throw new MotionFaultException(Name, "軸正在運動"),
+            _ => status,
+        };
+    }
+
+    /// <summary>下發速度參數。雷賽用加減速時間，不是加速度。在發令鎖內調用。</summary>
+    private void ApplyProfile(MotionProfile profile, string stage)
+    {
+        var tacc = profile.Velocity / profile.Acceleration;
+        var tdec = profile.Velocity / profile.Deceleration;
+        var minVelocity = Math.Min(_options.MinVelocity, profile.Velocity);
+        var stopVelocity = Math.Min(_options.StopVelocity, profile.Velocity);
+        Guard.EnsureSuccess(Api("set_profile_unit"),
+            _api.SetProfile(Card, Axis, minVelocity, profile.Velocity, tacc, tdec, stopVelocity),
+            $"min={minVelocity:R}, max={profile.Velocity:R}, tacc={tacc:R}, tdec={tdec:R}, stop={stopVelocity:R}",
+            stage);
+    }
+
+    /// <summary>停止指令發出後，等 check_done 確認軸真正停下；減速段還在走時不能當作已停止。</summary>
+    private async Task WaitStoppedAsync(string stage)
+    {
+        var start = Time.GetTimestamp();
+        while (true)
+        {
+            var done = _api.CheckDone(Card, Axis);
+            if (done == 1)
+            {
+                return;
+            }
+
+            if (done != 0)
+            {
+                throw new LeadshineCallException(Name, Api("check_done"), done, $"{stage} 停止確認失敗：check_done={done}");
+            }
+
+            if (Time.GetElapsedTime(start) > _options.MotionTimeout)
+            {
+                throw new MotionFaultException(Name, $"{stage} 已發出停止，但軸在超時內沒有停下");
+            }
+
+            await Task.Delay(_options.PollInterval, Time).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>運動過程中要盯哪一側的限位。</summary>
+    private readonly record struct LimitWatch(bool Positive, bool Negative)
+    {
+        public static LimitWatch Both => new(true, true);
     }
 
     /// <summary>
@@ -409,7 +492,7 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
     /// 調用方取消時先停軸，再拋出取消。
     /// </summary>
     private async Task WaitUntilAsync(string stage, TimeSpan timeout, Func<AxisStatus, bool> finished,
-        CancellationToken cancellationToken)
+        LimitWatch limits, CancellationToken cancellationToken)
     {
         var start = Time.GetTimestamp();
         try
@@ -424,10 +507,11 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
                     throw new MotionFaultException(Name, $"{stage} 過程中報警：{status.AlarmReason}");
                 }
 
-                if (status.PositiveLimit || status.NegativeLimit)
+                var positiveHit = limits.Positive && status.PositiveLimit;
+                if (positiveHit || (limits.Negative && status.NegativeLimit))
                 {
                     // 限位由控制卡自行停軸，這裡只負責報出來
-                    throw new MotionFaultException(Name, $"{stage} 過程中觸發{(status.PositiveLimit ? "正" : "負")}限位");
+                    throw new MotionFaultException(Name, $"{stage} 過程中觸發{(positiveHit ? "正" : "負")}限位");
                 }
 
                 if (finished(status))

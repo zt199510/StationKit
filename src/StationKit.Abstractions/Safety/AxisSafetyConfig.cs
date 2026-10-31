@@ -14,6 +14,12 @@ public sealed record AxisSafetyConfig
 
     public double MaxAcceleration { get; init; } = double.NaN;
 
+    /// <summary>
+    /// 未回零時允許的最大點動速度。未回零時坐標不可信、軟限位無效，只能靠低速和硬限位兜底。
+    /// 未配置（NaN）表示未回零時禁止點動。
+    /// </summary>
+    public double UnhomedJogMaxVelocity { get; init; } = double.NaN;
+
     public bool EmergencyStopEnabled { get; init; }
 
     /// <summary>急停輸入有效電平：true 高電平有效，false 低電平有效，null 未指定。</summary>

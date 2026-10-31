@@ -1,3 +1,4 @@
+using StationKit.Abstractions.Motion;
 using StationKit.Motion.Leadshine.Smc.Native;
 
 namespace StationKit.Motion.Leadshine.Smc;
@@ -92,6 +93,9 @@ public sealed class SmcNativeApi : ISmcNativeApi
     public short MoveAbsolute(ushort cardNo, ushort axisNo, double position) =>
         NativeMethods.smc_pmove_unit(cardNo, axisNo, position, AbsoluteMode);
 
+    public short MoveContinuous(ushort cardNo, ushort axisNo, JogDirection direction) =>
+        NativeMethods.smc_vmove(cardNo, axisNo, ToVmoveDirection(direction));
+
     public short CheckDone(ushort cardNo, ushort axisNo) => NativeMethods.smc_check_done(cardNo, axisNo);
 
     public short StopAxis(ushort cardNo, ushort axisNo, LeadshineStopMode mode) =>
@@ -172,4 +176,8 @@ public sealed class SmcNativeApi : ISmcNativeApi
     }
 
     private static ushort ToEnable(bool enabled) => enabled ? (ushort)1 : (ushort)0;
+
+    // vmove dir：0 負方向，1 正方向
+    private static ushort ToVmoveDirection(JogDirection direction) =>
+        direction == JogDirection.Positive ? (ushort)1 : (ushort)0;
 }

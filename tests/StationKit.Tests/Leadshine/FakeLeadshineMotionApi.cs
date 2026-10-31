@@ -1,3 +1,4 @@
+using StationKit.Abstractions.Motion;
 using StationKit.Motion.Leadshine;
 
 namespace StationKit.Tests.Leadshine;
@@ -12,7 +13,7 @@ internal abstract class FakeLeadshineMotionApi(string prefix) : ILeadshineMotion
     private readonly object _sync = new();
     private readonly List<string> _calls = [];
     private int _pollsUntilDone;
-    private double _target;
+    private double? _arrival;
     private bool _homing;
     private double _equiv;
     private bool _emgEnabled;
@@ -21,6 +22,11 @@ internal abstract class FakeLeadshineMotionApi(string prefix) : ILeadshineMotion
 
     /// <summary>每次運動需要多少次 check_done 輪詢才到位。</summary>
     public int PollsPerMove { get; set; } = 3;
+
+    /// <summary>stop 之後還要幾次 check_done 輪詢才真正停下（模擬減速段）。</summary>
+    public int PollsAfterStop { get; set; }
+
+    public JogDirection? LastVmoveDirection { get; private set; }
 
     public double Position { get; set; }
 
@@ -100,8 +106,25 @@ internal abstract class FakeLeadshineMotionApi(string prefix) : ILeadshineMotion
         {
             lock (_sync)
             {
-                _target = position;
+                _arrival = position;
                 _pollsUntilDone = PollsPerMove;
+            }
+        }
+
+        return result;
+    }
+
+    public short MoveContinuous(ushort cardNo, ushort axisNo, JogDirection direction)
+    {
+        var result = Record($"{prefix}_vmove");
+        if (result == 0)
+        {
+            lock (_sync)
+            {
+                // 速度模式沒有終點，一直走到 stop
+                LastVmoveDirection = direction;
+                _arrival = null;
+                _pollsUntilDone = int.MaxValue;
             }
         }
 
@@ -115,9 +138,9 @@ internal abstract class FakeLeadshineMotionApi(string prefix) : ILeadshineMotion
             if (_pollsUntilDone > 0)
             {
                 _pollsUntilDone--;
-                if (_pollsUntilDone == 0)
+                if (_pollsUntilDone == 0 && _arrival is { } arrival)
                 {
-                    Position = _homing ? 0 : _target;
+                    Position = arrival;
                 }
 
                 return 0;
@@ -131,7 +154,9 @@ internal abstract class FakeLeadshineMotionApi(string prefix) : ILeadshineMotion
     {
         lock (_sync)
         {
-            _pollsUntilDone = 0;
+            // 被停下的運動不會到達原目標
+            _arrival = null;
+            _pollsUntilDone = Math.Min(_pollsUntilDone, PollsAfterStop);
             LastStopMode = mode;
         }
 
@@ -162,6 +187,7 @@ internal abstract class FakeLeadshineMotionApi(string prefix) : ILeadshineMotion
         lock (_sync)
         {
             _homing = true;
+            _arrival = 0;
             _pollsUntilDone = PollsPerMove;
         }
     }

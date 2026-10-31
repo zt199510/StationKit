@@ -71,6 +71,9 @@ internal static class NativeMethods
     internal static extern short dmc_pmove_unit(ushort CardNo, ushort axis, double Dist, ushort posi_mode);
 
     [DllImport(Dll, CallingConvention = CallingConvention.StdCall)]
+    internal static extern short dmc_vmove(ushort CardNo, ushort axis, ushort dir);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.StdCall)]
     internal static extern short dmc_check_done(ushort CardNo, ushort axis);
 
     [DllImport(Dll, CallingConvention = CallingConvention.StdCall)]

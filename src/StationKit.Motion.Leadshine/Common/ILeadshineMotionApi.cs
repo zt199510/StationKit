@@ -1,3 +1,5 @@
+using StationKit.Abstractions.Motion;
+
 namespace StationKit.Motion.Leadshine;
 
 /// <summary>dmc_stop / smc_stop 的停止模式。</summary>
@@ -38,6 +40,9 @@ public interface ILeadshineMotionApi
     short GetSoftLimit(ushort cardNo, ushort axisNo, out LeadshineSoftLimit softLimit);
 
     short MoveAbsolute(ushort cardNo, ushort axisNo, double position);
+
+    /// <summary>速度模式連續運動（vmove），按 set_profile_unit 的最大速度一直走，直到 stop。</summary>
+    short MoveContinuous(ushort cardNo, ushort axisNo, JogDirection direction);
 
     /// <summary>0 運動中，1 已停止；其他值視為非法狀態。</summary>
     short CheckDone(ushort cardNo, ushort axisNo);

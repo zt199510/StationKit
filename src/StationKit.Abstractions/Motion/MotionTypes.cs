@@ -18,6 +18,12 @@ public enum StopMode
     Immediate,
 }
 
+public enum JogDirection
+{
+    Negative = -1,
+    Positive = 1,
+}
+
 /// <summary>軸狀態快照。值類型，讀取後不會被其他線程改變。</summary>
 public readonly record struct AxisStatus(
     AxisState State,

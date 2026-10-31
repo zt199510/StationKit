@@ -12,6 +12,8 @@ namespace StationKit.Motion.Simulation;
     Justification = "運動用的 CancellationTokenSource 不帶定時器，無需釋放；Abort 可能在鎖外晚於運動結束調用 Cancel，釋放反而會拋 ObjectDisposedException")]
 public sealed class SimAxis : IAxis, IAxisSafetyPort
 {
+    private const double JogSimulatedDistance = 1e6;
+
     private readonly object _sync = new();
     private readonly TimeProvider _time;
     private AxisState _state = AxisState.Disabled;
@@ -115,6 +117,34 @@ public sealed class SimAxis : IAxis, IAxisSafetyPort
             var segment = TrapezoidProfile.Plan(start, reachable, profile);
             return new MotionPlan(segment.Duration, segment, reachable, Homes: false, fault);
         }, cancellationToken);
+    }
+
+    public async Task JogAsync(JogDirection direction, MotionProfile profile, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+        profile.Validate();
+        try
+        {
+            await RunMotionAsync(AxisState.Moving, start =>
+            {
+                // 速度模式：一直走到限位開關；沒有限位開關時按很遠的距離模擬，實際由鬆開按鈕停止
+                var far = start + ((int)direction * JogSimulatedDistance);
+                var limit = direction == JogDirection.Positive ? PositiveLimitSwitch : NegativeLimitSwitch;
+                var hitsLimit = double.IsFinite(limit);
+                var reachable = hitsLimit ? limit : far;
+                var segment = TrapezoidProfile.Plan(start, reachable, profile);
+                var fault = hitsLimit ? (direction == JogDirection.Positive ? "正限位觸發" : "負限位觸發") : null;
+                return new MotionPlan(segment.Duration, segment, reachable, Homes: false, fault);
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // 鬆開按鈕：RunMotionAsync 已先停軸（或根本沒有下發），點動正常結束
+            return;
+        }
+
+        // 沒有限位時不會走到這裡：時長足夠長，只會被鬆開或停止打斷
+        throw new MotionFaultException(Name, "點動未鬆開就結束了");
     }
 
     public Task ResetAlarmAsync(CancellationToken cancellationToken = default)

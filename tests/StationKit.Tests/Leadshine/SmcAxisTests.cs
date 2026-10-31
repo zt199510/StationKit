@@ -299,6 +299,21 @@ public class SmcAxisTests
         Assert.Throws<ArgumentException>(() => controller.CreateAxis(Options()));
     }
 
+    [Fact]
+    public async Task 點動_調用smc_vmove_方向正確()
+    {
+        using var axis = await EnabledAxisAsync();
+        using var hold = new CancellationTokenSource();
+
+        var jog = axis.JogAsync(JogDirection.Negative, Profile, hold.Token);
+        await WaitForCallAsync("smc_vmove");
+        await hold.CancelAsync();
+        await jog;
+
+        Assert.Equal(["smc_set_profile_unit", "smc_vmove", "smc_stop"], _api.Calls.Skip(2));
+        Assert.Equal(JogDirection.Negative, _api.LastVmoveDirection);
+    }
+
     private async Task WaitForCallAsync(string apiName)
     {
         var deadline = DateTime.UtcNow.AddSeconds(5);

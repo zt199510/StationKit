@@ -291,6 +291,96 @@ public class DmcAxisTests
         Assert.Equal(["dmc_board_close", "dmc_board_init", "dmc_board_init_eth", "nmc_get_total_axes"], _api.Calls);
     }
 
+    [Fact]
+    public async Task 點動_vmove下發_鬆開後減速停止並等停穩才完成()
+    {
+        _api.PollsAfterStop = 5;
+        using var axis = await EnabledAxisAsync();
+        using var hold = new CancellationTokenSource();
+
+        var jog = axis.JogAsync(JogDirection.Positive, Profile, hold.Token);
+        await WaitForCallAsync("dmc_vmove");
+        await hold.CancelAsync();
+        await jog;
+
+        Assert.Equal(["nmc_set_axis_enable", "dmc_set_profile_unit", "dmc_vmove", "dmc_stop"], _api.Calls);
+        Assert.Equal(JogDirection.Positive, _api.LastVmoveDirection);
+        Assert.Equal(LeadshineStopMode.Decelerated, _api.LastStopMode);
+        // 減速段走完才返回：返回時 check_done 已經是 1
+        Assert.Equal(1, _api.CheckDone(0, 0));
+        Assert.Equal(AxisState.Idle, axis.GetStatus().State);
+    }
+
+    [Fact]
+    public async Task 點動下發前已鬆開_不調用dmc_vmove()
+    {
+        using var axis = await EnabledAxisAsync();
+
+        await axis.JogAsync(JogDirection.Positive, Profile, new CancellationToken(canceled: true));
+
+        Assert.DoesNotContain("dmc_vmove", _api.Calls);
+    }
+
+    [Fact]
+    public async Task 停在正限位上_拒絕正向點動_允許負向點動移出()
+    {
+        _api.IoStatus = 0b10; // EL+
+        using var axis = await EnabledAxisAsync();
+
+        var ex = await Assert.ThrowsAsync<MotionFaultException>(
+            () => axis.JogAsync(JogDirection.Positive, Profile, CancellationToken.None));
+        Assert.Contains("已在正限位上", ex.Message);
+        Assert.DoesNotContain("dmc_vmove", _api.Calls);
+
+        using var hold = new CancellationTokenSource();
+        var jog = axis.JogAsync(JogDirection.Negative, Profile, hold.Token);
+        await WaitForCallAsync("dmc_vmove");
+        await Task.Delay(20);
+        Assert.False(jog.IsCompleted);   // 正限位仍有效，但負向點動不應被它打斷
+        await hold.CancelAsync();
+        await jog;
+        Assert.Equal(JogDirection.Negative, _api.LastVmoveDirection);
+    }
+
+    [Fact]
+    public async Task 點動中觸發同向限位_報故障()
+    {
+        using var axis = await EnabledAxisAsync();
+        using var hold = new CancellationTokenSource();
+
+        var jog = axis.JogAsync(JogDirection.Negative, Profile, hold.Token);
+        await WaitForCallAsync("dmc_vmove");
+        _api.IoStatus = 0b1000_0000; // SL-（卡上的軟限位）
+
+        var ex = await Assert.ThrowsAsync<MotionFaultException>(() => jog);
+        Assert.Contains("Jog 過程中觸發負限位", ex.Message);
+    }
+
+    [Fact]
+    public async Task 點動中未鬆開卻被外部停止_報故障()
+    {
+        using var axis = await EnabledAxisAsync();
+        using var hold = new CancellationTokenSource();
+
+        var jog = axis.JogAsync(JogDirection.Positive, Profile, hold.Token);
+        await WaitForCallAsync("dmc_vmove");
+        _api.StopAxis(0, 0, LeadshineStopMode.Decelerated);
+
+        var ex = await Assert.ThrowsAsync<MotionFaultException>(() => jog);
+        Assert.Contains("未鬆開按鈕", ex.Message);
+    }
+
+    [Fact]
+    public async Task 停在負限位上往正方向運動_不誤報負限位()
+    {
+        _api.IoStatus = 0b100; // EL-
+        using var axis = await EnabledAxisAsync();
+
+        await axis.MoveAbsoluteAsync(10, Profile);
+
+        Assert.Equal(10, axis.GetStatus().Position);
+    }
+
     private async Task WaitForCallAsync(string apiName)
     {
         var deadline = DateTime.UtcNow.AddSeconds(5);

@@ -83,6 +83,9 @@ internal static class NativeMethods
     internal static extern short smc_pmove_unit(ushort ConnectNo, ushort axis, double Dist, ushort posi_mode);
 
     [DllImport(Dll, CallingConvention = CallingConvention.StdCall)]
+    internal static extern short smc_vmove(ushort ConnectNo, ushort axis, ushort dir);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.StdCall)]
     internal static extern short smc_check_done(ushort ConnectNo, ushort axis);
 
     [DllImport(Dll, CallingConvention = CallingConvention.StdCall)]
