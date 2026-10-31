@@ -61,8 +61,8 @@ public interface IDigitalInput
     /// 等到邏輯值等於 expected 並保持 stableTime。超時拋 IoTimeoutException（帶信號名、期望值、當前值）；
     /// 數據不可信時拋 IoFaultException；只接受調用之後讀到的數據（見 4.1）。
     /// </summary>
-    Task WaitAsync(bool expected, TimeSpan timeout, CancellationToken cancellationToken = default,
-        TimeSpan stableTime = default);
+    Task WaitAsync(bool expected, TimeSpan timeout, TimeSpan stableTime = default,
+        CancellationToken cancellationToken = default);
 }
 ```
 
