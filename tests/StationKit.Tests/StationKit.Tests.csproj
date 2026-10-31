@@ -25,6 +25,7 @@
     <ProjectReference Include="..\..\src\StationKit.Motion.Simulation\StationKit.Motion.Simulation.csproj" />
     <ProjectReference Include="..\..\src\StationKit.Safety\StationKit.Safety.csproj" />
     <ProjectReference Include="..\..\src\StationKit.Stations\StationKit.Stations.csproj" />
+    <ProjectReference Include="..\..\src\StationKit.Motion.Dmc\StationKit.Motion.Dmc.csproj" />
   </ItemGroup>
 
 </Project>

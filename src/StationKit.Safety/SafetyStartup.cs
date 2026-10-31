@@ -97,8 +97,9 @@ public static class SafetyStartup
             yield return $"{axis}：最大加速度回讀不一致，期望 {expected.MaxAcceleration}，實際 {actual.MaxAcceleration}";
         }
 
+        // 急停未啟用時電平沒有意義，控制卡回讀出的默認電平不參與比較
         if (expected.EmergencyStopEnabled != actual.EmergencyStopEnabled ||
-            expected.EmergencyStopActiveHigh != actual.EmergencyStopActiveHigh)
+            (expected.EmergencyStopEnabled && expected.EmergencyStopActiveHigh != actual.EmergencyStopActiveHigh))
         {
             yield return $"{axis}：急停配置回讀不一致，期望 {Describe(expected)}，實際 {Describe(actual)}";
         }
