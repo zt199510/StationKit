@@ -152,7 +152,10 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
                 "尚無狀態數據（輪詢未啟動或尚未完成第一輪）");
         }
 
-        return BuildStatus(snapshot);
+        var status = BuildStatus(snapshot);
+        var age = _poller.AgeOf(snapshot);
+        // 過期的快照不能顯示成「靜止、正常」；位置保留最後讀到的值，供界面參考
+        return age > _poller.StaleTimeout ? status with { State = AxisState.Alarm, AlarmReason = StaleReason(age) } : status;
     }
 
     public async Task EnableAsync(CancellationToken cancellationToken = default)
@@ -599,22 +602,46 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
         return cycle;
     }
 
-    /// <summary>等一個週期號大於 <paramref name="afterCycle"/> 的快照。本軸在某一輪讀取異常時，繼續等下一輪。</summary>
+    /// <summary>
+    /// 等一個週期號大於 <paramref name="afterCycle"/> 的快照。本軸在某一輪讀取異常時，繼續等下一輪。
+    /// 快照過期（輪詢停了，或本軸一直讀取失敗）時報故障，不會一直等下去，也不會返回過期的數據。
+    /// </summary>
     protected async Task<(AxisStatus Status, LeadshineAxisSnapshot Snapshot)> NextAsync(long afterCycle,
         CancellationToken cancellationToken)
     {
+        var waitStart = _poller.Time.GetTimestamp();
         var waitAfter = afterCycle;
         while (true)
         {
             var snapshot = _poller.GetSnapshot(Axis);
+            // 先判斷過期再判斷圍欄：晚於圍欄但已經很舊的快照同樣不可信。還沒有快照時從開始等待算起
+            var age = snapshot != null ? _poller.AgeOf(snapshot) : _poller.Time.GetElapsedTime(waitStart);
+            if (age > _poller.StaleTimeout)
+            {
+                throw new MotionFaultException(Name, snapshot != null ? StaleReason(age)
+                    : $"{_poller.StaleTimeout.TotalMilliseconds:0} ms 內沒有狀態數據（輪詢未啟動或本軸讀取一直失敗）");
+            }
+
             if (snapshot != null && snapshot.Cycle > afterCycle)
             {
                 return (BuildStatus(snapshot), snapshot);
             }
 
-            waitAfter = await _poller.WaitForCycleAsync(waitAfter, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                waitAfter = await _poller.WaitForCycleAsync(waitAfter, _poller.StaleTimeout - age, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                // 等不到新週期，下一圈按過期報故障
+            }
         }
     }
+
+    private string StaleReason(TimeSpan age) =>
+        $"狀態數據過期：{age.TotalMilliseconds:0} ms 未更新（上限 {_poller.StaleTimeout.TotalMilliseconds:0} ms），" +
+        "輪詢可能已停止或本軸讀取一直失敗";
 
     /// <summary>反映了最後一條指令的狀態：最新快照已經晚於圍欄就直接用，否則等下一輪。</summary>
     private async Task<AxisStatus> FreshStatusAsync(CancellationToken cancellationToken) =>
@@ -755,7 +782,19 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
         {
             while (true)
             {
-                var (status, snapshot) = await NextAsync(seen, cancellationToken).ConfigureAwait(false);
+                AxisStatus status;
+                LeadshineAxisSnapshot snapshot;
+                try
+                {
+                    (status, snapshot) = await NextAsync(seen, cancellationToken).ConfigureAwait(false);
+                }
+                catch (MotionFaultException)
+                {
+                    // 狀態過期：軸可能還在走而我們看不到，先停軸再報故障
+                    await StopAsync().ConfigureAwait(false);
+                    throw;
+                }
+
                 seen = snapshot.Cycle;
                 if (status.State == AxisState.Alarm)
                 {

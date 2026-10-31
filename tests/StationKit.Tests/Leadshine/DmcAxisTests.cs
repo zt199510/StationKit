@@ -27,8 +27,9 @@ public sealed class DmcAxisTests : IDisposable
 
     public DmcAxisTests()
     {
-        // 軸的等待都按輪詢週期推進，測試裡讓輪詢器在後台以 1 ms 週期運行
-        _poller = new LeadshineStatusPoller(_api, 0, "DMC");
+        // 軸的等待都按輪詢週期推進，測試裡讓輪詢器在後台以 1 ms 週期運行。
+        // CI 負載下線程池可能延遲幾十毫秒，過期時間放寬到 1 s；過期檢測在 LeadshineStaleStatusTests 裡用假時鐘測
+        _poller = new LeadshineStatusPoller(_api, 0, "DMC", staleTimeout: TimeSpan.FromSeconds(1));
         _poller.Start(TimeSpan.FromMilliseconds(1));
     }
 

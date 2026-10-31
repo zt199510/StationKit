@@ -12,6 +12,12 @@ namespace StationKit.Motion.Leadshine;
 /// </summary>
 public sealed class LeadshineStatusPoller : IDisposable
 {
+    /// <summary>快照超過這個時間沒有更新就視為過期（docs/design/central-polling.md 4.2）。</summary>
+    public static readonly TimeSpan DefaultStaleTimeout = TimeSpan.FromMilliseconds(100);
+
+    /// <summary>過期時間至少是輪詢週期的幾倍：偶爾慢一兩輪不能誤報。</summary>
+    private const int MinStalePeriods = 3;
+
     private readonly ILeadshineMotionApi _api;
     private readonly TimeProvider _time;
     private readonly Action<string>? _log;
@@ -29,18 +35,35 @@ public sealed class LeadshineStatusPoller : IDisposable
 
     /// <param name="api">原始 SDK，輪詢器內部用 <see cref="Gate"/> 加鎖調用。</param>
     /// <param name="family">日誌裡的系列名，DMC 或 SMC。</param>
+    /// <param name="staleTimeout">快照過期時間，默認 <see cref="DefaultStaleTimeout"/>。</param>
     public LeadshineStatusPoller(ILeadshineMotionApi api, ushort cardNo, string family,
-        TimeProvider? timeProvider = null, Action<string>? log = null)
+        TimeProvider? timeProvider = null, Action<string>? log = null, TimeSpan? staleTimeout = null)
     {
         ArgumentNullException.ThrowIfNull(api);
+        var stale = staleTimeout ?? DefaultStaleTimeout;
+        if (stale <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(staleTimeout), stale, "過期時間必須大於 0");
+        }
+
         _api = api;
         CardNo = cardNo;
         _family = family;
         _time = timeProvider ?? TimeProvider.System;
         _log = log;
+        StaleTimeout = stale;
     }
 
     public ushort CardNo { get; }
+
+    /// <summary>
+    /// 快照超過這個時間沒有更新，狀態報 Alarm，等待中的運動報故障。
+    /// 輪詢線程停了、或某根軸一直讀取失敗，都會表現為快照不再更新。
+    /// </summary>
+    public TimeSpan StaleTimeout { get; }
+
+    /// <summary>快照時間戳所用的時鐘，判斷過期時必須用同一個。</summary>
+    internal TimeProvider Time => _time;
 
     /// <summary>這張卡的 DLL 調用鎖，輪詢器、控制器和軸共用。</summary>
     internal LeadshineCardGate Gate { get; } = new();
@@ -70,9 +93,13 @@ public sealed class LeadshineStatusPoller : IDisposable
         }
     }
 
-    /// <summary>等到週期號大於 <paramref name="afterCycle"/> 的一輪讀完，返回讀完的週期號。</summary>
-    public async Task<long> WaitForCycleAsync(long afterCycle, CancellationToken cancellationToken)
+    /// <summary>
+    /// 等到週期號大於 <paramref name="afterCycle"/> 的一輪讀完，返回讀完的週期號。
+    /// <paramref name="timeout"/> 內沒有等到則拋 <see cref="TimeoutException"/>。
+    /// </summary>
+    public async Task<long> WaitForCycleAsync(long afterCycle, TimeSpan timeout, CancellationToken cancellationToken)
     {
+        var start = _time.GetTimestamp();
         while (true)
         {
             // 先取信號再判斷：判斷之後才完成的那一輪一定會設置這個信號，不會漏掉
@@ -83,9 +110,18 @@ public sealed class LeadshineStatusPoller : IDisposable
                 return completed;
             }
 
-            await signal.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            var remaining = timeout - _time.GetElapsedTime(start);
+            if (remaining <= TimeSpan.Zero)
+            {
+                throw new TimeoutException($"{timeout.TotalMilliseconds:0} ms 內沒有新的輪詢週期");
+            }
+
+            await signal.Task.WaitAsync(remaining, _time, cancellationToken).ConfigureAwait(false);
         }
     }
+
+    /// <summary>快照距今多久。</summary>
+    internal TimeSpan AgeOf(LeadshineAxisSnapshot snapshot) => _time.GetElapsedTime(snapshot.Timestamp);
 
     /// <summary>最新快照；這根軸還沒被讀過時返回 null。</summary>
     public LeadshineAxisSnapshot? GetSnapshot(ushort axisNo) =>
@@ -94,11 +130,7 @@ public sealed class LeadshineStatusPoller : IDisposable
     /// <summary>啟動後台輪詢。重複調用無效。</summary>
     public void Start(TimeSpan period)
     {
-        if (period <= TimeSpan.Zero)
-        {
-            throw new ArgumentOutOfRangeException(nameof(period), period, "輪詢週期必須大於 0");
-        }
-
+        ValidatePeriod(period);
         if (IsRunning)
         {
             return;
@@ -107,6 +139,22 @@ public sealed class LeadshineStatusPoller : IDisposable
         _loopCts = new CancellationTokenSource();
         var token = _loopCts.Token;
         _loop = Task.Run(() => RunLoopAsync(period, token), CancellationToken.None);
+    }
+
+    /// <summary>檢查輪詢週期：大於 0，並且過期時間至少是週期的 <see cref="MinStalePeriods"/> 倍。</summary>
+    internal void ValidatePeriod(TimeSpan period)
+    {
+        if (period <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(period), period, "輪詢週期必須大於 0");
+        }
+
+        if (period * MinStalePeriods > StaleTimeout)
+        {
+            throw new ArgumentOutOfRangeException(nameof(period), period,
+                $"輪詢週期 {period.TotalMilliseconds:0.#} ms 太長：過期時間 {StaleTimeout.TotalMilliseconds:0} ms " +
+                $"至少要是週期的 {MinStalePeriods} 倍，否則正常輪詢也會被判為過期");
+        }
     }
 
     public void Stop()

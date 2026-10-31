@@ -19,13 +19,16 @@ public sealed class SmcController
     public static readonly TimeSpan DefaultPollPeriod = TimeSpan.FromMilliseconds(5);
 
     /// <param name="pollPeriod">集中輪詢週期，默認 <see cref="DefaultPollPeriod"/>。</param>
+    /// <param name="staleTimeout">狀態過期時間，默認 <see cref="LeadshineStatusPoller.DefaultStaleTimeout"/>，至少為輪詢週期的 3 倍。</param>
     public SmcController(ISmcNativeApi api, ushort connectNo, string ipAddress, uint baud = 0,
-        Action<string>? log = null, TimeSpan? pollPeriod = null)
+        Action<string>? log = null, TimeSpan? pollPeriod = null, TimeSpan? staleTimeout = null)
     {
         ArgumentNullException.ThrowIfNull(api);
         _rawApi = api;
-        Poller = new LeadshineStatusPoller(api, connectNo, "SMC", log: log);
+        Poller = new LeadshineStatusPoller(api, connectNo, "SMC", log: log, staleTimeout: staleTimeout);
         _pollPeriod = pollPeriod ?? DefaultPollPeriod;
+        // 配置錯誤在構造時就報出來，不要等到 Open
+        Poller.ValidatePeriod(_pollPeriod);
         _api = new GatedSmcNativeApi(api, Poller.Gate);
         ConnectNo = connectNo;
         _ipAddress = ipAddress;

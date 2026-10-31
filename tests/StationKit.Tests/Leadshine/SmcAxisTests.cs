@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Time.Testing;
 using StationKit.Abstractions.Motion;
 using StationKit.Abstractions.Safety;
 using StationKit.Motion.Leadshine;
@@ -36,8 +37,9 @@ public sealed class SmcAxisTests : IDisposable
 
     public SmcAxisTests()
     {
-        // 軸的等待都按輪詢週期推進，測試裡讓輪詢器在後台以 1 ms 週期運行
-        _poller = new LeadshineStatusPoller(_api, 0, "SMC");
+        // 軸的等待都按輪詢週期推進，測試裡讓輪詢器在後台以 1 ms 週期運行。
+        // CI 負載下線程池可能延遲幾十毫秒，過期時間放寬到 1 s；過期檢測在 LeadshineStaleStatusTests 裡用假時鐘測
+        _poller = new LeadshineStatusPoller(_api, 0, "SMC", staleTimeout: TimeSpan.FromSeconds(1));
         _poller.Start(TimeSpan.FromMilliseconds(1));
     }
 
@@ -421,13 +423,23 @@ public sealed class SmcAxisTests : IDisposable
     [Fact]
     public async Task 未啟用INP且配置停穩延時_到位後再等延時才返回()
     {
-        using var axis = await EnabledAxisAsync(Options() with { SettleTime = TimeSpan.FromMilliseconds(200) });
+        // 延時用假時鐘：不推進時鐘就一定還在延時裡，不受 CI 負載影響
+        var time = new FakeTimeProvider();
+        using var axis = new SmcAxis(_api, Options() with { SettleTime = TimeSpan.FromMilliseconds(200) }, _poller,
+            time);
+        await axis.EnableAsync();
 
         var move = axis.MoveAbsoluteAsync(80, Profile);
-        await WaitUntilAsync(() => _api.CheckDone(0, 0) == 1);
+        await WaitUntilAsync(() => _poller.GetSnapshot(0) is { Done: 1, Command: 80 });
         await Task.Delay(50);
         Assert.False(move.IsCompleted);   // 已到位，還在停穩延時裡
 
+        // 延時計時器在軸看到到位後才創建，推進到它完成為止
+        await WaitUntilAsync(() =>
+        {
+            time.Advance(TimeSpan.FromMilliseconds(200));
+            return move.IsCompleted;
+        });
         await move;
         Assert.Equal(80, Status(axis).Position);
     }

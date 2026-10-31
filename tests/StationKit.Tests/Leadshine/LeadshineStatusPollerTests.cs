@@ -10,7 +10,9 @@ public sealed class LeadshineStatusPollerTests : IDisposable
     private readonly List<string> _log = [];
     private readonly LeadshineStatusPoller _poller;
 
-    public LeadshineStatusPollerTests() => _poller = new LeadshineStatusPoller(_api, 0, "DMC", log: _log.Add);
+    // 手動推動輪詢的測試之間有 Task.Delay，過期時間放寬，避免 CI 負載下誤報
+    public LeadshineStatusPollerTests() =>
+        _poller = new LeadshineStatusPoller(_api, 0, "DMC", log: _log.Add, staleTimeout: TimeSpan.FromSeconds(1));
 
     public void Dispose() => _poller.Dispose();
 

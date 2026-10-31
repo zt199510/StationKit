@@ -16,13 +16,16 @@ public sealed class DmcController
     public static readonly TimeSpan DefaultPollPeriod = TimeSpan.FromMilliseconds(5);
 
     /// <param name="pollPeriod">集中輪詢週期，默認 <see cref="DefaultPollPeriod"/>。</param>
+    /// <param name="staleTimeout">狀態過期時間，默認 <see cref="LeadshineStatusPoller.DefaultStaleTimeout"/>，至少為輪詢週期的 3 倍。</param>
     public DmcController(IDmcNativeApi api, ushort cardNo, string ipAddress, Action<string>? log = null,
-        TimeSpan? pollPeriod = null)
+        TimeSpan? pollPeriod = null, TimeSpan? staleTimeout = null)
     {
         ArgumentNullException.ThrowIfNull(api);
         _rawApi = api;
-        Poller = new LeadshineStatusPoller(api, cardNo, "DMC", log: log);
+        Poller = new LeadshineStatusPoller(api, cardNo, "DMC", log: log, staleTimeout: staleTimeout);
         _pollPeriod = pollPeriod ?? DefaultPollPeriod;
+        // 配置錯誤在構造時就報出來，不要等到 Open
+        Poller.ValidatePeriod(_pollPeriod);
         _api = new GatedDmcNativeApi(api, Poller.Gate);
         CardNo = cardNo;
         _ipAddress = ipAddress;
