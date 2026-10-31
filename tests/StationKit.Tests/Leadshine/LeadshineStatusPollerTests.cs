@@ -12,7 +12,7 @@ public sealed class LeadshineStatusPollerTests : IDisposable
 
     // 手動推動輪詢的測試之間有 Task.Delay，過期時間放寬，避免 CI 負載下誤報
     public LeadshineStatusPollerTests() =>
-        _poller = new LeadshineStatusPoller(_api, 0, "DMC", log: _log.Add, staleTimeout: TimeSpan.FromSeconds(1));
+        _poller = new LeadshineStatusPoller(_api, 0, "DMC", log: AddLog, staleTimeout: TimeSpan.FromSeconds(1));
 
     public void Dispose() => _poller.Dispose();
 
@@ -90,13 +90,13 @@ public sealed class LeadshineStatusPollerTests : IDisposable
 
         Assert.Equal(3, _poller.GetSnapshot(0)!.Cycle);
         Assert.Null(_poller.GetSnapshot(1));
-        Assert.Single(_log, line => line.StartsWith("[報警] DMC 輪詢：CardId=0, AxisIndex=1", StringComparison.Ordinal));
+        Assert.Single(Logs(), line => line.StartsWith("[報警] DMC 輪詢：CardId=0, AxisIndex=1", StringComparison.Ordinal));
 
         _api.ThrowOnRead = null;
         _poller.RefreshOnce();
 
         Assert.Equal(4, _poller.GetSnapshot(1)!.Cycle);
-        Assert.Contains(_log, line => line.Contains("AxisIndex=1, Stage=Poll, 狀態讀取已恢復"));
+        Assert.Contains(Logs(), line => line.Contains("AxisIndex=1, Stage=Poll, 狀態讀取已恢復"));
     }
 
     [Fact]
@@ -131,6 +131,67 @@ public sealed class LeadshineStatusPollerTests : IDisposable
 
         Assert.False(_poller.IsRunning);
         Assert.Equal(stoppedAt, _poller.CurrentCycle);
+    }
+
+    [Fact]
+    public async Task 後台輪詢在專用線程上運行_不佔線程池()
+    {
+        using var axis = CreateAxis(0);
+        string? threadName = null;
+        var onThreadPool = true;
+        _api.ThrowOnRead = _ =>
+        {
+            threadName = Thread.CurrentThread.Name;
+            onThreadPool = Thread.CurrentThread.IsThreadPoolThread;
+            return false;
+        };
+
+        _poller.Start(TimeSpan.FromMilliseconds(1));
+        await WaitUntilAsync(() => threadName != null);
+        _poller.Stop();
+
+        Assert.Equal("DMC 輪詢 卡0", threadName);
+        Assert.False(onThreadPool);
+    }
+
+    [Fact]
+    public async Task 後台輪詢定期輸出週期統計()
+    {
+        using var axis = CreateAxis(0);
+        _poller.StatsInterval = TimeSpan.FromMilliseconds(50);
+
+        _poller.Start(TimeSpan.FromMilliseconds(10));
+        await WaitUntilAsync(() => Logs().Any(l => l.Contains("週期統計", StringComparison.Ordinal)));
+        _poller.Stop();
+
+        var line = Logs().First(l => l.Contains("週期統計", StringComparison.Ordinal));
+        Assert.Contains("DMC 輪詢：CardId=0, Stage=Poll", line, StringComparison.Ordinal);
+        Assert.Contains("PeriodMs=10, AvgMs=", line, StringComparison.Ordinal);
+        Assert.Contains("MaxGapMs=", line, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task 讀取耗時超過週期_統計日誌帶警告()
+    {
+        using var axis = CreateAxis(0);
+        _api.ReadDuration = TimeSpan.FromMilliseconds(2);
+        _poller.StatsInterval = TimeSpan.FromMilliseconds(50);
+
+        // 一輪讀 3 個值，每個 2 ms，必然超過 1 ms 的週期
+        _poller.Start(TimeSpan.FromMilliseconds(1));
+        await WaitUntilAsync(() => Logs().Any(l => l.StartsWith("[警告] ", StringComparison.Ordinal)));
+        _poller.Stop();
+
+        var line = Logs().First(l => l.StartsWith("[警告] ", StringComparison.Ordinal));
+        Assert.Contains("週期統計", line, StringComparison.Ordinal);
+        Assert.Contains("需加大輪詢週期", line, StringComparison.Ordinal);
+        Assert.DoesNotContain("Overruns=0", line, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 統計間隔必須大於0()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => _poller.StatsInterval = TimeSpan.Zero);
     }
 
     [Fact]
@@ -228,6 +289,23 @@ public sealed class LeadshineStatusPollerTests : IDisposable
         Assert.Equal(["nmc_set_axis_enable"], _api.Calls);
     }
 
+    /// <summary>日誌由輪詢線程寫入，讀寫都要加鎖。</summary>
+    private void AddLog(string line)
+    {
+        lock (_log)
+        {
+            _log.Add(line);
+        }
+    }
+
+    private List<string> Logs()
+    {
+        lock (_log)
+        {
+            return [.. _log];
+        }
+    }
+
     /// <summary>
     /// 使能並且只推進一輪輪詢：新軸沒有快照，使能等到這一輪才繼續。
     /// 之後不會再有新週期，最新快照不晚於使能的圍欄，測試前置狀態是確定的。
@@ -254,7 +332,7 @@ public sealed class LeadshineStatusPollerTests : IDisposable
     }
 
     private DmcAxis CreateAxis(ushort axisNo, LeadshineFeedback feedback = LeadshineFeedback.None) =>
-        new(_api, Options(axisNo) with { Feedback = feedback }, _poller, log: _log.Add);
+        new(_api, Options(axisNo) with { Feedback = feedback }, _poller, log: AddLog);
 
     private static DmcAxisOptions Options(ushort axisNo) => new()
     {

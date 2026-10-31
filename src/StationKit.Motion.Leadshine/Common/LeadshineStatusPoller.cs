@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 
 namespace StationKit.Motion.Leadshine;
 
@@ -8,10 +9,15 @@ namespace StationKit.Motion.Leadshine;
 /// <para>
 /// 讀一根軸時持有卡鎖，讀完立即釋放，不是整輪都持有：stop 最多等一根軸讀完就能插進來。
 /// </para>
+/// <para>
+/// 後台輪詢用專用線程，不佔線程池；每隔 <see cref="StatsInterval"/> 記錄一次週期統計，上機時據此確定週期。
+/// </para>
 /// 設計說明見 docs/design/central-polling.md。
 /// </summary>
 public sealed class LeadshineStatusPoller : IDisposable
 {
+    private static readonly TimeSpan StopJoinTimeout = TimeSpan.FromSeconds(1);
+
     /// <summary>快照超過這個時間沒有更新就視為過期（docs/design/central-polling.md 4.2）。</summary>
     public static readonly TimeSpan DefaultStaleTimeout = TimeSpan.FromMilliseconds(100);
 
@@ -31,7 +37,8 @@ public sealed class LeadshineStatusPoller : IDisposable
     private long _completedCycle;
     private TaskCompletionSource _cycleCompleted = NewSignal();
     private CancellationTokenSource? _loopCts;
-    private Task? _loop;
+    private Thread? _thread;
+    private TimeSpan _statsInterval = TimeSpan.FromSeconds(10);
 
     /// <param name="api">原始 SDK，輪詢器內部用 <see cref="Gate"/> 加鎖調用。</param>
     /// <param name="family">日誌裡的系列名，DMC 或 SMC。</param>
@@ -74,7 +81,23 @@ public sealed class LeadshineStatusPoller : IDisposable
     /// <summary>最近讀完的一輪的週期號。</summary>
     public long CompletedCycle => Interlocked.Read(ref _completedCycle);
 
-    public bool IsRunning => _loop is { IsCompleted: false };
+    public bool IsRunning => _thread is { IsAlive: true };
+
+    /// <summary>週期統計日誌的間隔，在 <see cref="Start"/> 之前設置。調試時可以縮短。</summary>
+    public TimeSpan StatsInterval
+    {
+        get => _statsInterval;
+        set
+        {
+            if (value <= TimeSpan.Zero)
+            {
+                // 0 會導致每輪都寫一條統計，刷屏
+                throw new ArgumentOutOfRangeException(nameof(value), value, "統計間隔必須大於 0");
+            }
+
+            _statsInterval = value;
+        }
+    }
 
     /// <summary>讀一輪：所有已註冊的軸各讀一次。可以和後台循環並存，兩者互斥執行。</summary>
     public void RefreshOnce()
@@ -138,7 +161,14 @@ public sealed class LeadshineStatusPoller : IDisposable
 
         _loopCts = new CancellationTokenSource();
         var token = _loopCts.Token;
-        _loop = Task.Run(() => RunLoopAsync(period, token), CancellationToken.None);
+        _thread = new Thread(() => RunLoop(period, token))
+        {
+            IsBackground = true,
+            Name = $"{_family} 輪詢 卡{CardNo}",
+            // 狀態讀取優先於界面刷新；每輪只讀幾個值，不會餓死其他線程
+            Priority = ThreadPriority.AboveNormal,
+        };
+        _thread.Start();
     }
 
     /// <summary>檢查輪詢週期：大於 0，並且過期時間至少是週期的 <see cref="MinStalePeriods"/> 倍。</summary>
@@ -166,17 +196,15 @@ public sealed class LeadshineStatusPoller : IDisposable
         }
 
         cts.Cancel();
-        try
+        // DLL 調用卡死時不能讓 Close 跟著卡死；後台線程不會阻止進程退出
+        if (_thread?.Join(StopJoinTimeout) == false)
         {
-            _loop?.Wait();
-        }
-        catch (AggregateException ex) when (ex.InnerExceptions.All(e => e is OperationCanceledException))
-        {
+            Log($"Stage=Poll, 輪詢線程 {StopJoinTimeout.TotalSeconds:0} 秒內未退出，可能卡在 DLL 調用裡", "[警告] ");
         }
 
         cts.Dispose();
         _loopCts = null;
-        _loop = null;
+        _thread = null;
     }
 
     public void Dispose() => Stop();
@@ -206,12 +234,83 @@ public sealed class LeadshineStatusPoller : IDisposable
         _snapshots.TryRemove(axisNo, out _);
     }
 
-    private async Task RunLoopAsync(TimeSpan period, CancellationToken token)
+    private void RunLoop(TimeSpan period, CancellationToken token)
     {
-        while (!token.IsCancellationRequested)
+        var timerRaised = TimerResolution.Begin();
+        if (!timerRaised)
         {
-            RefreshOnce();
-            await Task.Delay(period, _time, token).ConfigureAwait(false);
+            Log("Stage=Poll, 系統計時精度提高失敗，實際週期可能比配置長", "[警告] ");
+        }
+
+        try
+        {
+            var stats = new CycleStats();
+            var statsStart = _time.GetTimestamp();
+            long? lastStart = null;
+            var failing = false;
+            while (!token.IsCancellationRequested)
+            {
+                var start = _time.GetTimestamp();
+                try
+                {
+                    RefreshOnce();
+                    if (failing)
+                    {
+                        failing = false;
+                        Log("Stage=Poll, 輪詢循環已恢復");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // 單軸異常在 RefreshAxis 裡已經兜住，到這裡是意外；線程不能退出，持續失敗由過期檢測報出來
+                    if (!failing)
+                    {
+                        failing = true;
+                        Log($"Stage=Poll, 輪詢循環異常：{ex.GetType().Name}: {ex.Message}", "[報警] ");
+                    }
+                }
+
+                var duration = _time.GetElapsedTime(start);
+                stats.Add(duration, lastStart is { } last ? _time.GetElapsedTime(last, start) : TimeSpan.Zero,
+                    period);
+                lastStart = start;
+                if (_time.GetElapsedTime(statsStart) >= StatsInterval)
+                {
+                    LogStats(stats, period);
+                    stats = new CycleStats();
+                    statsStart = _time.GetTimestamp();
+                }
+
+                // 按週期從本輪開始算；讀取超時就不睡，直接下一輪，不補發積壓的週期
+                var wait = period - duration;
+                if (wait > TimeSpan.Zero)
+                {
+                    token.WaitHandle.WaitOne(wait);
+                }
+            }
+        }
+        finally
+        {
+            if (timerRaised)
+            {
+                TimerResolution.End();
+            }
+        }
+    }
+
+    private void LogStats(CycleStats stats, TimeSpan period)
+    {
+        var message = string.Create(CultureInfo.InvariantCulture,
+            $"Stage=Poll, 週期統計：Cycles={stats.Cycles}, PeriodMs={period.TotalMilliseconds:0.###}, " +
+            $"AvgMs={stats.AverageMs:0.###}, MaxMs={stats.MaxMs:0.###}, MaxGapMs={stats.MaxGapMs:0.###}, " +
+            $"Overruns={stats.Overruns}");
+        if (stats.Overruns > 0)
+        {
+            Log($"{message}，有 {stats.Overruns} 輪讀取耗時超過週期，需加大輪詢週期或減少本卡輪詢的軸數", "[警告] ");
+        }
+        else
+        {
+            Log(message);
         }
     }
 
@@ -266,4 +365,36 @@ public sealed class LeadshineStatusPoller : IDisposable
         _log?.Invoke($"{prefix}{_family} 輪詢：CardId={CardNo}, {message}");
 
     private sealed record Registration(ushort AxisNo, bool ReadFeedback, Func<string>? DescribeAlarm);
+
+    /// <summary>
+    /// 一段時間內的週期統計。耗時（Avg/Max）是讀一輪所用的時間；
+    /// 間隔（MaxGap）是相鄰兩輪開始的時間差，比週期大很多說明計時精度不夠或線程被搶佔。
+    /// </summary>
+    private sealed class CycleStats
+    {
+        private double _totalMs;
+
+        public int Cycles { get; private set; }
+
+        public double MaxMs { get; private set; }
+
+        public double MaxGapMs { get; private set; }
+
+        public int Overruns { get; private set; }
+
+        public double AverageMs => Cycles == 0 ? 0 : _totalMs / Cycles;
+
+        public void Add(TimeSpan duration, TimeSpan gap, TimeSpan period)
+        {
+            var ms = duration.TotalMilliseconds;
+            Cycles++;
+            _totalMs += ms;
+            MaxMs = Math.Max(MaxMs, ms);
+            MaxGapMs = Math.Max(MaxGapMs, gap.TotalMilliseconds);
+            if (duration > period)
+            {
+                Overruns++;
+            }
+        }
+    }
 }

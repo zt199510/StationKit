@@ -256,6 +256,11 @@ internal abstract class FakeLeadshineMotionApi(string prefix) : ILeadshineMotion
             throw new InvalidOperationException($"模擬通訊中斷：{apiName} axis={axisNo}");
         }
 
+        if (ReadDuration > TimeSpan.Zero)
+        {
+            Thread.Sleep(ReadDuration);
+        }
+
         _reads.AddOrUpdate(apiName, 1, (_, count) => count + 1);
     }
 
@@ -289,6 +294,9 @@ internal abstract class FakeLeadshineMotionApi(string prefix) : ILeadshineMotion
 
     /// <summary>同時在 SDK 內部的調用數的最大值，用於驗證卡鎖：大於 1 說明有併發調用。</summary>
     public int MaxConcurrentCalls => _maxConcurrent;
+
+    /// <summary>每次讀取在「SDK 內部」停留的時間，用來模擬讀取慢、輪詢超週期。</summary>
+    public TimeSpan ReadDuration { get; set; }
 
     /// <summary>每次記錄調用時在「SDK 內部」停留的時間，用來放大併發窗口。</summary>
     public TimeSpan CallDuration { get; set; }
