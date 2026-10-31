@@ -90,6 +90,17 @@ public sealed class SmcNativeApi : ISmcNativeApi
     public short WriteOutputBit(ushort connectNo, ushort bitNo, ushort level) =>
         NativeMethods.smc_write_outbit(connectNo, bitNo, level);
 
+    public short SetInpMode(ushort cardNo, ushort axisNo, LeadshineInpMode mode) =>
+        NativeMethods.smc_set_inp_mode(cardNo, axisNo, ToEnable(mode.Enabled), mode.Logic);
+
+    public short GetInpMode(ushort cardNo, ushort axisNo, out LeadshineInpMode mode)
+    {
+        ushort enabled = 0, logic = 0;
+        var result = NativeMethods.smc_get_inp_mode(cardNo, axisNo, ref enabled, ref logic);
+        mode = new LeadshineInpMode(enabled != 0, logic);
+        return result;
+    }
+
     public short MoveAbsolute(ushort cardNo, ushort axisNo, double position) =>
         NativeMethods.smc_pmove_unit(cardNo, axisNo, position, AbsoluteMode);
 

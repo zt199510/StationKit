@@ -16,6 +16,16 @@ public enum LeadshineStopMode : ushort
 public readonly record struct LeadshineSoftLimit(bool Enabled, ushort Source, ushort Action, double Negative, double Positive);
 
 /// <summary>
+/// INP 到位信號配置（對應 dmc_set_inp_mode / smc_set_inp_mode）。
+/// Logic：0 低電平有效、1 高電平有效，按驅動器 INP 輸出的接線填寫。
+/// </summary>
+public readonly record struct LeadshineInpMode(bool Enabled, ushort Logic)
+{
+    /// <summary>不使用 INP：運動以 check_done 為準。</summary>
+    public static LeadshineInpMode Disabled => new(false, 0);
+}
+
+/// <summary>
 /// DMC 和 SMC 兩個系列簽名一致的單軸函數。所有方法原樣返回雷賽錯誤碼（0 表示成功），不做任何判斷，
 /// 判斷和日誌統一放在調用方。cardNo 在 SMC 上對應 ConnectNo。
 /// </summary>
@@ -38,6 +48,10 @@ public interface ILeadshineMotionApi
     short SetSoftLimit(ushort cardNo, ushort axisNo, LeadshineSoftLimit softLimit);
 
     short GetSoftLimit(ushort cardNo, ushort axisNo, out LeadshineSoftLimit softLimit);
+
+    short SetInpMode(ushort cardNo, ushort axisNo, LeadshineInpMode mode);
+
+    short GetInpMode(ushort cardNo, ushort axisNo, out LeadshineInpMode mode);
 
     short MoveAbsolute(ushort cardNo, ushort axisNo, double position);
 

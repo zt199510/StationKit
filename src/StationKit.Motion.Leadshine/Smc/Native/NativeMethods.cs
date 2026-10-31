@@ -42,6 +42,12 @@ internal static class NativeMethods
         ref ushort emg_logic);
 
     [DllImport(Dll, CallingConvention = CallingConvention.StdCall)]
+    internal static extern short smc_set_inp_mode(ushort ConnectNo, ushort axis, ushort enable, ushort inp_logic);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.StdCall)]
+    internal static extern short smc_get_inp_mode(ushort ConnectNo, ushort axis, ref ushort enable, ref ushort inp_logic);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.StdCall)]
     internal static extern short smc_set_softlimit_unit(ushort ConnectNo, ushort axis, ushort enable,
         ushort source_sel, ushort SL_action, double N_limit, double P_limit);
 

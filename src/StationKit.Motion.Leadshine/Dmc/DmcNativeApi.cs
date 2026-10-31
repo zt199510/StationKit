@@ -76,6 +76,17 @@ public sealed class DmcNativeApi : IDmcNativeApi
         return NativeMethods.nmc_get_axis_errcode(cardNo, axisNo, ref errorCode);
     }
 
+    public short SetInpMode(ushort cardNo, ushort axisNo, LeadshineInpMode mode) =>
+        NativeMethods.dmc_set_inp_mode(cardNo, axisNo, ToEnable(mode.Enabled), mode.Logic);
+
+    public short GetInpMode(ushort cardNo, ushort axisNo, out LeadshineInpMode mode)
+    {
+        ushort enabled = 0, logic = 0;
+        var result = NativeMethods.dmc_get_inp_mode(cardNo, axisNo, ref enabled, ref logic);
+        mode = new LeadshineInpMode(enabled != 0, logic);
+        return result;
+    }
+
     public short MoveAbsolute(ushort cardNo, ushort axisNo, double position) =>
         NativeMethods.dmc_pmove_unit(cardNo, axisNo, position, AbsoluteMode);
 

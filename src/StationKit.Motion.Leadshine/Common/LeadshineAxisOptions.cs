@@ -13,6 +13,16 @@ public abstract record LeadshineAxisOptions
     /// <summary>脈衝當量（脈衝/mm）。</summary>
     public required double PulseEquivalent { get; init; }
 
+    /// <summary>
+    /// 是否用 INP 判定到位。必填，沒有默認值：接沒接 INP 由現場接線決定，
+    /// 猜「啟用」會永遠等不到到位，猜「不啟用」會以為檢查過了其實沒有。
+    /// 不需要停穩的軸（上下料等）填 <see cref="LeadshineInpMode.Disabled"/>。
+    /// </summary>
+    public required LeadshineInpMode InPositionSignal { get; init; }
+
+    /// <summary>check_done 之後等待 INP 有效的最長時間，超時報故障。</summary>
+    public TimeSpan InPositionTimeout { get; init; } = TimeSpan.FromMilliseconds(500);
+
     /// <summary>起始速度。</summary>
     public double MinVelocity { get; init; }
 
@@ -28,7 +38,7 @@ public abstract record LeadshineAxisOptions
     /// <summary>軟限位觸發後的動作（softlimit_unit SL_action），取值含義以所用卡型手冊為準，需實機確認。</summary>
     public ushort SoftLimitAction { get; init; }
 
-    /// <summary>判定到位的位置容差（mm）。</summary>
+    /// <summary>指令位置與目標的容差（mm），用於發現運動被提前停止；不是電機實際到位的判定，那個靠 INP。</summary>
     public double InPositionTolerance { get; init; } = 0.01;
 
     public TimeSpan MotionTimeout { get; init; } = TimeSpan.FromSeconds(30);

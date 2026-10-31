@@ -24,6 +24,7 @@ var x = controller.CreateAxis(new DmcAxisOptions
     AxisNo = 0,
     Name = "X",
     PulseEquivalent = 1000,               // 脈衝/mm
+    InPositionSignal = LeadshineInpMode.Disabled,   // 必填：是否用 INP 判定到位
     HomeProfile = new DmcHomeProfile(Mode: 17, LowVelocity: 5, HighVelocity: 20,
         AccelerationTime: 0.1, DecelerationTime: 0.1, Offset: 0),
 });
@@ -48,6 +49,7 @@ var z = controller.CreateAxis(new SmcAxisOptions
     AxisNo = 2,
     Name = "Z",
     PulseEquivalent = 1000,
+    InPositionSignal = new LeadshineInpMode(Enabled: true, Logic: 0),   // 啟用 INP：脈衝發完後等 INP 有效
     ServoOnLevel = 0,                     // SEVON 為 0 時使能 —— 按接線填，沒有默認值
     AlarmSignal = new SmcSignalMode(Enabled: true, Logic: 0, Action: 0),
     LimitSignal = new SmcSignalMode(Enabled: true, Logic: 0, Action: 0),
@@ -57,7 +59,7 @@ var z = controller.CreateAxis(new SmcAxisOptions
     AlarmReset = new SmcAlarmReset { Source = SmcAlarmResetSource.ErcPin, ActiveLevel = 0 },   // 可選
 });
 
-z.ApplyBaseParameters();                  // 脈衝當量、S 段，以及 ALM / EL 電平（全部寫入後回讀）
+z.ApplyBaseParameters();                  // 脈衝當量、S 段、INP，以及 ALM / EL 電平（全部寫入後回讀）
 await SafetyStartup.RunAsync([new(z, z, zSafety)]);
 await z.HomeAsync();                      // homemode / 回零速度 / 原點電平 / 回零位置 四組回讀一致才回零
 ```
@@ -86,6 +88,7 @@ await z.HomeAsync();                      // homemode / 回零速度 / 原點電
 | 已下發後取消 | 先 `stop` 減速停止，再拋出 `OperationCanceledException` |
 | 故障必須拋出 | 返回碼非零或回讀不一致拋 `LeadshineCallException`（帶 `ApiName`、`ReturnCode`）；運動中 ALM / EMG 立即停止 |
 | 速度參數 | 雷賽用加減速**時間**：`Tacc = v / a`，`Tdec = v / d` |
+| 到位判定 | `check_done == 1` 且指令位置在容差內（發現被提前停止）；`InPositionSignal` 啟用時，再等 INP 有效，超過 `InPositionTimeout` 報故障。INP 配置不管啟不啟用都寫入並回讀，防止卡裡固化著舊設置 |
 | 限位判定 | 只盯運動方向上的限位（EL 和卡上軟限位）：停在負限位上往正方向走出來，不會誤報負限位 |
 | 點動 | `vmove` 速度模式；已在點動方向的限位上時拒絕，反方向允許（用於移出限位）；鬆開後 `stop` 減速，等 `check_done == 1` 停穩才返回；沒鬆開卻停了報故障；`JogTimeout` 兜底 |
 | 回零完成 | `get_home_result == 1` 且 `check_done == 1`；原點信號不能代替回零結果 |
@@ -108,6 +111,8 @@ await z.HomeAsync();                      // homemode / 回零速度 / 原點電
 - [ ] `set_softlimit_unit` 的 `source_sel`、`SL_action` 取值含義（`SoftLimitSource` / `SoftLimitAction`）
 - [ ] 脈衝當量：命令走 100 mm，用尺子量實際距離
 - [ ] 運動中拍急停、觸發限位、斷開通訊，確認都能報出故障
+- [ ] INP：驅動器的 INP 輸出是否接到卡上、有效電平；啟用後手動推軸偏離，確認 `axis_io_status` 第 8 位會變。DMC 總線軸的 INP 是否同樣反映在第 8 位，需要實機確認
+- [ ] `InPositionTimeout`：按驅動器整定後的實際停穩時間設置，太短會誤報，太長會掩蓋增益問題
 - [ ] `vmove` 的 `dir`：0 負方向、1 正方向，與電機實際轉向、坐標正方向一致（先低速點一下）
 - [ ] 未回零時卡上軟限位仍然生效，坐標是上電時的隨機值，可能擋住未回零點動：確認現場的處理方式
 - [ ] 回零過程中觸發限位：現在仍按故障處理；用限位作原點的回零方式需要按實機情況調整

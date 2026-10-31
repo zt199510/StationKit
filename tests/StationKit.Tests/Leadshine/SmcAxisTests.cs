@@ -39,6 +39,7 @@ public class SmcAxisTests
         AxisNo = axisNo,
         Name = $"Y{axisNo}",
         PulseEquivalent = 1000,
+        InPositionSignal = LeadshineInpMode.Disabled,
         ServoOnLevel = 0,
         ServoSettleTime = TimeSpan.Zero,
         AlarmSignal = new SmcSignalMode(Enabled: true, Logic: 0, Action: 0),
@@ -142,7 +143,7 @@ public class SmcAxisTests
 
         Assert.Equal(
         [
-            "smc_set_equiv", "smc_get_equiv", "smc_set_s_profile",
+            "smc_set_equiv", "smc_get_equiv", "smc_set_s_profile", "smc_set_inp_mode", "smc_get_inp_mode",
             "smc_set_alm_mode", "smc_get_alm_mode", "smc_set_el_mode", "smc_get_el_mode",
         ], _api.Calls);
     }
@@ -312,6 +313,101 @@ public class SmcAxisTests
 
         Assert.Equal(["smc_set_profile_unit", "smc_vmove", "smc_stop"], _api.Calls.Skip(2));
         Assert.Equal(JogDirection.Negative, _api.LastVmoveDirection);
+    }
+
+    [Fact]
+    public async Task 啟用INP_脈衝發完後等INP有效才算到位()
+    {
+        using var axis = await EnabledAxisAsync(Options() with { InPositionSignal = new(Enabled: true, Logic: 0) });
+
+        var move = axis.MoveAbsoluteAsync(80, Profile);
+        await WaitUntilAsync(() => _api.CheckDone(0, 0) == 1);
+        await Task.Delay(30);
+        Assert.False(move.IsCompleted);   // 脈衝已發完，伺服還沒到位
+
+        _api.IoStatus = 1u << 8;          // INP
+        await move;
+        Assert.Equal(80, axis.GetStatus().Position);
+    }
+
+    [Fact]
+    public async Task 啟用INP_超時未到位_報故障並提示可能原因()
+    {
+        var options = Options() with
+        {
+            InPositionSignal = new(Enabled: true, Logic: 0),
+            InPositionTimeout = TimeSpan.FromMilliseconds(20),
+        };
+        using var axis = await EnabledAxisAsync(options);
+
+        var ex = await Assert.ThrowsAsync<MotionFaultException>(() => axis.MoveAbsoluteAsync(80, Profile));
+
+        Assert.Contains("20 ms 內 INP 未有效", ex.Message);
+        Assert.Contains("INP 未接線", ex.Message);
+    }
+
+    [Fact]
+    public async Task 等待INP時伺服報警_報故障()
+    {
+        using var axis = await EnabledAxisAsync(Options() with { InPositionSignal = new(Enabled: true, Logic: 0) });
+
+        var move = axis.MoveAbsoluteAsync(80, Profile);
+        await WaitUntilAsync(() => _api.CheckDone(0, 0) == 1);
+        _api.IoStatus = 1; // ALM
+
+        var ex = await Assert.ThrowsAsync<MotionFaultException>(() => move);
+        Assert.Contains("伺服報警 ALM", ex.Message);
+    }
+
+    [Fact]
+    public async Task 未啟用INP_不等INP()
+    {
+        using var axis = await EnabledAxisAsync();
+
+        await axis.MoveAbsoluteAsync(80, Profile);   // IoStatus 裡 INP 一直無效
+
+        Assert.Equal(80, axis.GetStatus().Position);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void INP配置_無論是否啟用都寫入並回讀(bool enabled)
+    {
+        using var axis = CreateAxis(Options() with { InPositionSignal = new(enabled, 1) });
+
+        axis.ApplyBaseParameters();
+
+        Assert.Contains("smc_set_inp_mode", _api.Calls);
+        Assert.Contains("smc_get_inp_mode", _api.Calls);
+    }
+
+    [Fact]
+    public void INP回讀不一致_拋出()
+    {
+        _api.InpReadback = m => m with { Enabled = false };
+        using var axis = CreateAxis(Options() with { InPositionSignal = new(Enabled: true, Logic: 0) });
+
+        var ex = Assert.Throws<LeadshineCallException>(axis.ApplyBaseParameters);
+
+        Assert.Equal("smc_get_inp_mode", ex.ApiName);
+        Assert.Contains("Expected=enable=True, logic=0, Actual=enable=False, logic=0", ex.Message);
+    }
+
+    [Fact]
+    public void INP電平超出0和1_構造時拒絕()
+    {
+        Assert.Throws<ArgumentException>(() => CreateAxis(Options() with { InPositionSignal = new(true, 2) }));
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (!condition())
+        {
+            Assert.True(DateTime.UtcNow < deadline, "等待條件超時");
+            await Task.Delay(1);
+        }
     }
 
     private async Task WaitForCallAsync(string apiName)

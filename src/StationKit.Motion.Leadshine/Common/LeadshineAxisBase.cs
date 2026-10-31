@@ -40,6 +40,10 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
         ApiPrefix = apiPrefix;
         Time = timeProvider ?? TimeProvider.System;
         Guard = new LeadshineCallGuard(apiPrefix.ToUpperInvariant(), options.CardNo, options.AxisNo, options.Name, log);
+        if (options.InPositionSignal.Logic > 1)
+        {
+            throw new ArgumentException($"{options.Name}：INP 有效電平只能是 0 或 1，實際 {options.InPositionSignal.Logic}");
+        }
     }
 
     public string Name => _options.Name;
@@ -76,6 +80,13 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
 
         Guard.EnsureSuccess(Api("set_s_profile"), _api.SetSProfile(Card, Axis, _options.STime),
             $"sTime={_options.STime:R}", stage);
+
+        // INP 不啟用時也要寫：卡裡可能固化著以前的設置
+        var inp = _options.InPositionSignal;
+        Guard.EnsureSuccess(Api("set_inp_mode"), _api.SetInpMode(Card, Axis, inp), Describe(inp), stage);
+        result = _api.GetInpMode(Card, Axis, out var actualInp);
+        Guard.EnsureSuccess(Api("get_inp_mode"), result, Describe(inp), stage, Describe(actualInp));
+        Guard.EnsureReadback(Api("get_inp_mode"), actualInp == inp, Describe(inp), Describe(actualInp), stage);
 
         ApplySignalParameters();
     }
@@ -189,6 +200,11 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
         {
             throw new MotionFaultException(Name,
                 $"運動已停止但未到位：目標 {position:R}，實際 {actual:R}（可能被外部停止）");
+        }
+
+        if (_options.InPositionSignal.Enabled)
+        {
+            await WaitInPositionSignalAsync(cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -427,6 +443,8 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
 
     protected string Api(string function) => $"{ApiPrefix}_{function}";
 
+    private static string Describe(LeadshineInpMode m) => $"enable={m.Enabled}, logic={m.Logic}";
+
     protected static string Describe(LeadshineSoftLimit s) =>
         $"enable={s.Enabled}, source={s.Source}, action={s.Action}, n={s.Negative:R}, p={s.Positive:R}";
 
@@ -453,6 +471,46 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
             _api.SetProfile(Card, Axis, minVelocity, profile.Velocity, tacc, tdec, stopVelocity),
             $"min={minVelocity:R}, max={profile.Velocity:R}, tacc={tacc:R}, tdec={tdec:R}, stop={stopVelocity:R}",
             stage);
+    }
+
+    /// <summary>
+    /// 等 INP 有效。check_done == 1 只代表規劃走完（脈衝軸是脈衝發完），伺服還在追跟隨誤差，
+    /// 馬上拍照或加工會偏。這裡等驅動器自己報告到位，代替「運動完 Sleep 幾十毫秒」。
+    /// </summary>
+    private async Task WaitInPositionSignalAsync(CancellationToken cancellationToken)
+    {
+        var start = Time.GetTimestamp();
+        while (true)
+        {
+            // 每次輪詢都記日誌會刷屏，這裡只在失敗時拋出
+            var result = _api.ReadAxisIoStatus(Card, Axis, out var raw);
+            if (result != 0)
+            {
+                throw new LeadshineCallException(Name, Api("axis_io_status"), result,
+                    $"等待 INP 時讀取 IO 狀態失敗：錯誤碼 {result}");
+            }
+
+            var io = LeadshineAxisIo.Parse(raw);
+            if (io.Alarm || io.EmergencyStop)
+            {
+                throw new MotionFaultException(Name, $"等待 INP 時{(io.Alarm ? DescribeServoAlarm() : "急停 EMG 有效")}");
+            }
+
+            if (io.InPosition)
+            {
+                return;
+            }
+
+            if (Time.GetElapsedTime(start) > _options.InPositionTimeout)
+            {
+                throw new MotionFaultException(Name,
+                    $"規劃已走完，{_options.InPositionTimeout.TotalMilliseconds:0} ms 內 INP 未有效" +
+                    "（跟隨誤差過大、增益不足，或 INP 未接線 / 電平配錯）");
+            }
+
+            // 指令已經走完，這裡取消不需要停軸
+            await Task.Delay(_options.PollInterval, Time, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     /// <summary>停止指令發出後，等 check_done 確認軸真正停下；減速段還在走時不能當作已停止。</summary>

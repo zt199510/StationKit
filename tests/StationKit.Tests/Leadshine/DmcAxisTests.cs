@@ -30,6 +30,7 @@ public class DmcAxisTests
         AxisNo = axisNo,
         Name = $"X{axisNo}",
         PulseEquivalent = 1000,
+        InPositionSignal = LeadshineInpMode.Disabled,
         HomeProfile = new DmcHomeProfile(Mode: 17, LowVelocity: 5, HighVelocity: 20, AccelerationTime: 0.1,
             DecelerationTime: 0.1, Offset: 0),
         PollInterval = TimeSpan.FromMilliseconds(1),

@@ -19,6 +19,7 @@ internal abstract class FakeLeadshineMotionApi(string prefix) : ILeadshineMotion
     private bool _emgEnabled;
     private ushort _emgLogic;
     private LeadshineSoftLimit _softLimit;
+    private LeadshineInpMode _inp;
 
     /// <summary>每次運動需要多少次 check_done 輪詢才到位。</summary>
     public int PollsPerMove { get; set; } = 3;
@@ -37,6 +38,8 @@ internal abstract class FakeLeadshineMotionApi(string prefix) : ILeadshineMotion
     public Func<ushort, ushort>? EmergencyLogicReadback { get; set; }
 
     public double? EquivReadback { get; set; }
+
+    public Func<LeadshineInpMode, LeadshineInpMode>? InpReadback { get; set; }
 
     public IReadOnlyList<string> Calls
     {
@@ -97,6 +100,18 @@ internal abstract class FakeLeadshineMotionApi(string prefix) : ILeadshineMotion
     {
         softLimit = _softLimit;
         return Record($"{prefix}_get_softlimit_unit");
+    }
+
+    public short SetInpMode(ushort cardNo, ushort axisNo, LeadshineInpMode mode)
+    {
+        _inp = mode;
+        return Record($"{prefix}_set_inp_mode");
+    }
+
+    public short GetInpMode(ushort cardNo, ushort axisNo, out LeadshineInpMode mode)
+    {
+        mode = InpReadback?.Invoke(_inp) ?? _inp;
+        return Record($"{prefix}_get_inp_mode");
     }
 
     public short MoveAbsolute(ushort cardNo, ushort axisNo, double position)

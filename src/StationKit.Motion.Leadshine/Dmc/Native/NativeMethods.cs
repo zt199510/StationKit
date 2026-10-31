@@ -46,6 +46,12 @@ internal static class NativeMethods
     internal static extern short dmc_get_emg_mode(ushort CardNo, ushort axis, ref ushort enbale, ref ushort emg_logic);
 
     [DllImport(Dll, CallingConvention = CallingConvention.StdCall)]
+    internal static extern short dmc_set_inp_mode(ushort CardNo, ushort axis, ushort enable, ushort inp_logic);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.StdCall)]
+    internal static extern short dmc_get_inp_mode(ushort CardNo, ushort axis, ref ushort enable, ref ushort inp_logic);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.StdCall)]
     internal static extern short dmc_set_softlimit_unit(ushort CardNo, ushort axis, ushort enable, ushort source_sel,
         ushort SL_action, double N_limit, double P_limit);
 
