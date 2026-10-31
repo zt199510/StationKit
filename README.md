@@ -5,6 +5,7 @@
 - **軸抽象**：統一的單軸接口，語義寫死在接口文檔裡（到位才算完成、取消不晚於下發、故障必須拋出）
 - **模擬軸**：梯形 / 三角形速度規劃、硬限位、報警注入。沒有機台也能跑完整流程和自動化測試
 - **雷賽適配器**：DMC 總線軸和 SMC 脈衝軸共用一套安全邏輯；返回碼和回讀統一校驗、結構化日誌、發令鎖、回零結果確認、可選 INP 到位判定或停穩延時、指令 / 反饋位置分開讀取、感應器回零或絕對值回零；每卡一個專用輪詢線程，狀態只讀快照，同卡 DLL 調用串行，讀取失敗整卡停機，快照過期即報警
+- **數字 IO**：業務只看邏輯值，有效電平在配置裡聲明；讀不到就拋異常，不當作「沒有信號」；寫輸出後回讀核對；等待只認下發之後的數據。氣缸檢查兩端到位一致性，握手先等對方撤銷舊信號；雷賽 IO 併入集中輪詢，與軸共用卡鎖和卡故障。有模擬 IO 板和模擬氣缸
 - **安全初始化**：校驗全部 → 寫入 → 回讀核對 → 全部通過才使能；任一步失敗，沒有任何軸被使能
 - **安全包裝**：下發前檢查回零、軟限位、速度上限、互鎖規則，不通過時軸不動
 - **多軸同步運動**：任何一軸報警或被拒絕，其餘軸立即停下，不會各自走完再報故障
@@ -16,7 +17,7 @@
 ## 快速體驗
 
 ```bash
-dotnet test                                                # 176 個單元測試
+dotnet test                                                # 224 個單元測試
 dotnet run --project samples/StationKit.Demo               # 雙工位共用相機，正常運行 3 個循環
 dotnet run --project samples/StationKit.Demo -- --fault    # 注入伺服報警，演示故障隔離與人工恢復
 dotnet run --project samples/StationKit.Demo -- --door     # 運行中打開安全門，演示互鎖拒絕運動與人工恢復
@@ -36,13 +37,14 @@ dotnet run --project samples/StationKit.Demo -- --door     # 運行中打開安�
 
 | 項目 | 職責 | 依賴 |
 |---|---|---|
-| `StationKit.Abstractions` | 軸接口、運動參數、安全配置、互鎖接口 | 無 |
+| `StationKit.Abstractions` | 軸接口、運動參數、安全配置、互鎖接口、數字 IO、氣缸、握手 | 無 |
 | `StationKit.Motion.Simulation` | 模擬軸、梯形規劃 | Abstractions |
-| `StationKit.Motion.Leadshine` | 雷賽適配器：DMC 總線軸（LTDMC.dll）、SMC 脈衝軸（LTSMC.dll） | Abstractions |
+| `StationKit.Io.Simulation` | 模擬 IO 板、模擬氣缸（可注入卡故障、輸出卡死、氣缸卡住、感應器粘連） | Abstractions |
+| `StationKit.Motion.Leadshine` | 雷賽適配器：DMC 總線軸（LTDMC.dll）、SMC 脈衝軸（LTSMC.dll）、通用 IO | Abstractions |
 | `StationKit.Safety` | 配置校驗、安全初始化、安全包裝軸 | Abstractions |
 | `StationKit.Alarms` | 報警代碼表、報警中心 | 無 |
-| `StationKit.Stations` | 工站基類、共享資源仲裁、節拍統計 | Alarms |
-| `samples/StationKit.Demo` | 雙工位共用相機的演示 | 以上全部 |
+| `StationKit.Stations` | 工站基類、共享資源仲裁、節拍統計、IO 報警分類 | Alarms、Abstractions |
+| `samples/StationKit.Demo` | 雙工位共用相機、氣缸上料、安全門互鎖的演示 | 以上全部 |
 
 依賴方向是單向的：沒有任何一層依賴 UI，也沒有任何一層依賴具體的運動控制卡。設計說明見 [docs/architecture.md](docs/architecture.md)，接入真實控制卡的方法見 [docs/hardware-adapter.md](docs/hardware-adapter.md)。
 
@@ -60,7 +62,7 @@ dotnet run --project samples/StationKit.Demo -- --door     # 運行中打開安�
 - [x] 雷賽 SMC 脈衝軸，與 DMC 共用安全邏輯，待實機驗證
 - [x] 點動（帶看門狗）、寸動
 - [ ] 連續插補
-- [ ] 數字 IO 抽象和模擬 IO
+- [x] 數字 IO 抽象和模擬 IO；雷賽通用 IO，待實機驗證
 - [ ] 配方管理（版本化、換型校驗）
 - [ ] 用戶權限分級（操作員 / 工程師 / 管理員）
 - [ ] MES 接口抽象和生產記錄追溯

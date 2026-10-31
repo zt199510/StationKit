@@ -107,6 +107,29 @@ controller.Poller.StatsInterval = TimeSpan.FromSeconds(10);   // 週期統計日
 直接構造軸時（不經過控制器）需要傳入同一張卡的輪詢器：`new DmcAxis(api, options, controller.Poller)`。
 原來每根軸的 `PollInterval` 已移除，週期由輪詢器統一決定。
 
+## 通用 IO
+
+卡上的通用輸入輸出併入同一個輪詢器：每輪在軸之後按端口讀取（每個端口 32 位），寫輸出經過同一把卡鎖。
+接口語義見 [design/digital-io.md](design/digital-io.md)。
+
+```csharp
+var io = controller.CreateIoBoard(inputPorts: 1, outputPorts: 1);     // 只配置用到的端口數，每卡一次
+var door = io.CreateInput(new IoPointConfig("安全門關閉", Bit: 3, ActiveHigh: false));
+var clamp = io.CreateOutput(new IoPointConfig("夾爪閥", Bit: 5, ActiveHigh: true));
+
+await clamp.SetAsync(true);                       // 下發後等到回讀一致才返回
+await door.WaitAsync(true, TimeSpan.FromSeconds(3));
+var guardedX = new GuardedAxis(x, safety, [Interlock.RequireInput("安全門", door)]);
+```
+
+| 行為 | 說明 |
+|---|---|
+| 讀取 | 只讀 IO 快照，不調 DLL；卡故障、過期、輪詢未啟動時拋 `IoFaultException`，不返回 false |
+| 寫入 | 持卡鎖調 `write_outbit`，返回碼錯誤拋異常並記 `[報警]`；之後等到下發之後讀到的輸出端口與寫入一致才完成 |
+| 讀取失敗 | `read_inport` 沒有錯誤碼，同一次持鎖內讀軸 0 指令位置作探針；拋異常或探針失敗與軸一樣整卡故障 |
+| 輸出位登記 | 同一位只能有一個所有者；SMC 軸用作報警復位的輸出位自動登記，不能再配置成其他輸出 |
+| 卡故障時的輸出 | 輸出口保持最後的狀態，軟件寫不進去。危險執行機構必須在安全回路裡有硬件斷開 |
+
 ## 結構
 
 | 文件 | 職責 |
@@ -115,6 +138,7 @@ controller.Poller.StatsInterval = TimeSpan.FromSeconds(10);   // 週期統計日
 | `Common/LeadshineAxisBase.cs` | 公共軸實現：發令鎖、到位判定、取消、超時、報警、安全參數 |
 | `Common/LeadshineCallGuard.cs` | 統一校驗返回碼和回讀值，按 `CardId / AxisIndex / AxisName / ApiName / ReturnCode / Expected / Actual / Stage` 記錄日誌 |
 | `Common/LeadshineAxisIo.cs` | `axis_io_status` 狀態字解析（兩個系列位定義相同） |
+| `Common/LeadshineIoBoard.cs`、`LeadshineIoSnapshot.cs` | 通用 IO：讀 IO 快照，經卡鎖寫輸出 |
 | `Dmc/*`、`Smc/*` | 各自的 P/Invoke、SDK 封裝、軸、控制器 |
 
 `*NativeApi` 只原樣返回雷賽錯誤碼，不做判斷；測試時替換成假實現。
@@ -178,6 +202,14 @@ SMC：
 - [ ] ALM、EL、ORG 的有效電平：手動觸發每個信號，看 `axis_io_status` 對應位是否跟著變
 - [ ] 回零方式：先把 `HomeSpeed` 調低，手放急停上試回零，確認方向和停止位置
 - [ ] 報警復位：驅動器報警清除輸入的最小脈寬，以及使能狀態下是否響應清除
+
+通用 IO：
+
+- [ ] 每個輸入的有效電平：手動觸發，看邏輯值是否正確
+- [ ] 斷開網線：`read_inport` 返回什麼，通訊探針是否報出整卡故障
+- [ ] 輸出寫入後幾個週期能回讀到；`IoBoard.OutputVerifyTimeout`（默認 100 ms）是否足夠
+- [ ] 卡故障、程序退出時閥的實際狀態，安全回路能否切斷危險動作
+- [ ] 加入 IO 後的週期統計：`AvgMs` 增加多少，`Overruns` 仍為 0
 
 ## 暫不支持
 
