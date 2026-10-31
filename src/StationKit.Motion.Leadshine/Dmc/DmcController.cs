@@ -10,12 +10,20 @@ public sealed class DmcController
     private readonly string _ipAddress;
     private readonly Action<string>? _log;
     private readonly LeadshineCallGuard _guard;
+    private readonly TimeSpan _pollPeriod;
 
-    public DmcController(IDmcNativeApi api, ushort cardNo, string ipAddress, Action<string>? log = null)
+    /// <summary>默認輪詢週期，上機後按日誌裡的實際耗時調整。</summary>
+    public static readonly TimeSpan DefaultPollPeriod = TimeSpan.FromMilliseconds(5);
+
+    /// <param name="pollPeriod">集中輪詢週期，默認 <see cref="DefaultPollPeriod"/>。</param>
+    public DmcController(IDmcNativeApi api, ushort cardNo, string ipAddress, Action<string>? log = null,
+        TimeSpan? pollPeriod = null)
     {
         ArgumentNullException.ThrowIfNull(api);
         _rawApi = api;
-        _api = new GatedDmcNativeApi(api, Gate);
+        Poller = new LeadshineStatusPoller(api, cardNo, "DMC", log: log);
+        _pollPeriod = pollPeriod ?? DefaultPollPeriod;
+        _api = new GatedDmcNativeApi(api, Poller.Gate);
         CardNo = cardNo;
         _ipAddress = ipAddress;
         _log = log;
@@ -24,8 +32,8 @@ public sealed class DmcController
 
     public ushort CardNo { get; }
 
-    /// <summary>這張卡的 DLL 調用鎖，控制器和它創建的所有軸共用。</summary>
-    public LeadshineCardGate Gate { get; } = new();
+    /// <summary>這張卡的集中輪詢器，控制器和它創建的所有軸共用（包括卡鎖）。<see cref="Open"/> 成功後啟動。</summary>
+    public LeadshineStatusPoller Poller { get; }
 
     /// <summary>連接控制卡，返回總軸數。初始化順序沿用現場驗證過的：先關閉，再初始化，再建立以太網連接。</summary>
     public uint Open()
@@ -37,10 +45,16 @@ public sealed class DmcController
             stage);
         var result = _api.GetTotalAxes(CardNo, out var totalAxes);
         _guard.EnsureSuccess("nmc_get_total_axes", result, "read", stage, $"totalAxes={totalAxes}");
+        Poller.Start(_pollPeriod);
         return totalAxes;
     }
 
-    public void Close() => _api.BoardClose();
+    /// <summary>先停輪詢再斷開：斷開後輪詢讀到的都是錯誤碼。</summary>
+    public void Close()
+    {
+        Poller.Stop();
+        _api.BoardClose();
+    }
 
     /// <summary>整卡急停（dmc_emg_stop）。調用失敗時拋出異常，由上層報警，不靜默吞掉。</summary>
     public void EmergencyStop() =>
@@ -55,6 +69,6 @@ public sealed class DmcController
         }
 
         // 傳原始 SDK 和同一把卡鎖，由軸自己包裝，避免包兩層
-        return new DmcAxis(_rawApi, options, Gate, timeProvider, _log);
+        return new DmcAxis(_rawApi, options, Poller, timeProvider, _log);
     }
 }

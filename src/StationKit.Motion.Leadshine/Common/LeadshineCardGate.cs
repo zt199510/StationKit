@@ -12,7 +12,7 @@ namespace StationKit.Motion.Leadshine;
 /// 加鎖順序固定為「先發令鎖、後卡鎖」：持有卡鎖時只做同步的 DLL 調用，不會去等發令鎖，因此不會死鎖。
 /// </para>
 /// </summary>
-public sealed class LeadshineCardGate
+internal sealed class LeadshineCardGate
 {
     /// <summary>可重入：同一線程在持有時再次進入（例如輪詢一根軸時連續讀幾個值）不會死鎖。</summary>
     internal Lock Sync { get; } = new();

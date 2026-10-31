@@ -10,16 +10,17 @@ public sealed class DmcAxis : LeadshineAxisBase
     private readonly GatedDmcNativeApi _api;
     private readonly DmcAxisOptions _options;
 
-    /// <param name="api">原始 SDK。構造時用 <paramref name="gate"/> 包一層，之後的調用全部經過卡鎖。</param>
-    /// <param name="gate">這根軸所在卡的 DLL 調用鎖，同一張卡上的軸和控制器必須共用同一個。</param>
-    public DmcAxis(IDmcNativeApi api, DmcAxisOptions options, LeadshineCardGate gate,
+    /// <param name="api">原始 SDK。構造時用輪詢器的卡鎖包一層，之後的調用全部經過卡鎖。</param>
+    /// <param name="poller">這根軸所在卡的輪詢器。同一張卡上的軸和控制器必須共用同一個（共用卡鎖）。</param>
+    public DmcAxis(IDmcNativeApi api, DmcAxisOptions options, LeadshineStatusPoller poller,
         TimeProvider? timeProvider = null, Action<string>? log = null)
-        : this(Wrap(api, gate), options, timeProvider, log)
+        : this(Wrap(api, poller), options, poller, timeProvider, log)
     {
     }
 
-    private DmcAxis(GatedDmcNativeApi api, DmcAxisOptions options, TimeProvider? timeProvider, Action<string>? log)
-        : base(api, options, "dmc", timeProvider, log)
+    private DmcAxis(GatedDmcNativeApi api, DmcAxisOptions options, LeadshineStatusPoller poller,
+        TimeProvider? timeProvider, Action<string>? log)
+        : base(api, options, poller, "dmc", timeProvider, log)
     {
         _api = api;
         _options = options;
@@ -70,11 +71,11 @@ public sealed class DmcAxis : LeadshineAxisBase
             stage);
     }
 
-    private static GatedDmcNativeApi Wrap(IDmcNativeApi api, LeadshineCardGate gate)
+    private static GatedDmcNativeApi Wrap(IDmcNativeApi api, LeadshineStatusPoller poller)
     {
         ArgumentNullException.ThrowIfNull(api);
-        ArgumentNullException.ThrowIfNull(gate);
-        return new GatedDmcNativeApi(api, gate);
+        ArgumentNullException.ThrowIfNull(poller);
+        return new GatedDmcNativeApi(api, poller.Gate);
     }
 
     protected override short StartHome() => _api.HomeMove(Card, Axis);

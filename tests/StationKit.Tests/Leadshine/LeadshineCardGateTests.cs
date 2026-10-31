@@ -41,8 +41,8 @@ public class LeadshineCardGateTests
     {
         // 反證：不共用卡鎖時探針能看到併發，說明上面兩個測試的「1」不是探針失效造成的
         var api = new FakeDmcNativeApi { CallDuration = CallDuration };
-        using var x = new DmcAxis(api, DmcOptions(0), new LeadshineCardGate());
-        using var y = new DmcAxis(api, DmcOptions(1), new LeadshineCardGate());
+        using var x = new DmcAxis(api, DmcOptions(0), new LeadshineStatusPoller(api, 0, "DMC"));
+        using var y = new DmcAxis(api, DmcOptions(1), new LeadshineStatusPoller(api, 0, "DMC"));
 
         for (var attempt = 0; attempt < 20 && api.MaxConcurrentCalls < 2; attempt++)
         {

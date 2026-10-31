@@ -22,6 +22,7 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
     private const ushort EmergencyLogicHigh = 1; // 1 高電平有效
 
     private readonly ILeadshineMotionApi _api;
+    private readonly LeadshineStatusPoller _poller;
     private readonly LeadshineAxisOptions _options;
     private readonly SemaphoreSlim _motionCommandGate = new(1, 1);
     private readonly object _sync = new();
@@ -30,12 +31,20 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
     private bool _homing;
     private AxisSafetyConfig _softwareSafety = new();
 
-    protected LeadshineAxisBase(ILeadshineMotionApi api, LeadshineAxisOptions options, string apiPrefix,
-        TimeProvider? timeProvider, Action<string>? log)
+    /// <param name="api">已經用 <paramref name="poller"/> 的卡鎖包裝過的 SDK。</param>
+    protected LeadshineAxisBase(ILeadshineMotionApi api, LeadshineAxisOptions options, LeadshineStatusPoller poller,
+        string apiPrefix, TimeProvider? timeProvider, Action<string>? log)
     {
         ArgumentNullException.ThrowIfNull(api);
         ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(poller);
+        if (poller.CardNo != options.CardNo)
+        {
+            throw new ArgumentException($"軸 {options.Name} 的卡號 {options.CardNo} 與輪詢器的卡號 {poller.CardNo} 不一致");
+        }
+
         _api = api;
+        _poller = poller;
         _options = options;
         ApiPrefix = apiPrefix;
         Time = timeProvider ?? TimeProvider.System;
@@ -74,6 +83,9 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
                 throw new ArgumentException($"{options.Name}：絕對值回零的零點位置非法（{options.AbsoluteHomeTarget}）");
             }
         }
+
+        // 所有校驗通過後才註冊，避免構造失敗的軸留在輪詢列表裡
+        poller.Register(options.AxisNo, options.Feedback == LeadshineFeedback.Encoder);
     }
 
     public string Name => _options.Name;
@@ -121,39 +133,23 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
         ApplySignalParameters();
     }
 
+    /// <summary>從輪詢快照生成狀態，不調用 DLL。</summary>
     public AxisStatus GetStatus()
     {
-        var positionResult = _api.ReadPosition(Card, Axis, out var position);
-        var ioResult = _api.ReadAxisIoStatus(Card, Axis, out var rawIo);
-        var done = _api.CheckDone(Card, Axis);
-        var feedback = double.NaN;
-        short feedbackResult = 0;
-        if (_options.Feedback == LeadshineFeedback.Encoder)
+        var snapshot = _poller.GetSnapshot(Axis);
+        if (snapshot == null)
         {
-            feedbackResult = _api.ReadFeedbackPosition(Card, Axis, out feedback);
+            bool homed;
+            lock (_sync)
+            {
+                homed = _homed;
+            }
+
+            return new AxisStatus(AxisState.Alarm, double.NaN, homed, false, false,
+                "尚無狀態數據（輪詢未啟動或尚未完成第一輪）");
         }
 
-        bool enabled, homed, homing;
-        lock (_sync)
-        {
-            (enabled, homed, homing) = (_enabled, _homed, _homing);
-        }
-
-        if (positionResult != 0 || ioResult != 0 || done is not (0 or 1) || feedbackResult != 0)
-        {
-            return new AxisStatus(AxisState.Alarm, position, homed, false, false,
-                $"狀態讀取失敗：{Api("get_position_unit")}={positionResult}, {Api("axis_io_status")}={ioResult}, " +
-                $"{Api("check_done")}={done}, {Api("get_encoder_unit")}={feedbackResult}");
-        }
-
-        var io = LeadshineAxisIo.Parse(rawIo);
-        var alarm = io.Alarm ? DescribeServoAlarm() : io.EmergencyStop ? "急停 EMG 有效" : null;
-        var state = alarm != null ? AxisState.Alarm
-            : !enabled ? AxisState.Disabled
-            : homing ? AxisState.Homing
-            : done == 0 ? AxisState.Moving
-            : AxisState.Idle;
-        return new AxisStatus(state, position, homed, io.PositiveLimit, io.NegativeLimit, alarm, feedback);
+        return BuildStatus(snapshot);
     }
 
     public async Task EnableAsync(CancellationToken cancellationToken = default)
@@ -161,7 +157,7 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
         await _motionCommandGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var status = GetStatus();
+            var status = ReadStatusDirect();
             if (status.State == AxisState.Alarm)
             {
                 throw new MotionFaultException(Name, $"報警中，需先復位：{status.AlarmReason}");
@@ -232,7 +228,7 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
         await WaitUntilAsync("Move", _options.MotionTimeout, status => status.State == AxisState.Idle, limits,
             cancellationToken).ConfigureAwait(false);
 
-        var actual = GetStatus().Position;
+        var actual = ReadStatusDirect().Position;
         if (Math.Abs(actual - position) > _options.InPositionTolerance)
         {
             throw new MotionFaultException(Name,
@@ -518,6 +514,7 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
     {
         if (disposing)
         {
+            _poller.Unregister(Axis);
             _motionCommandGate.Dispose();
         }
     }
@@ -576,9 +573,48 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
     protected static string Describe(LeadshineSoftLimit s) =>
         $"enable={s.Enabled}, source={s.Source}, action={s.Action}, n={s.Negative:R}, p={s.Positive:R}";
 
+    /// <summary>直接讀卡（持卡鎖）生成狀態。內部等待在改為按輪詢週期之前暫時使用。</summary>
+    private AxisStatus ReadStatusDirect()
+    {
+        LeadshineAxisSnapshot snapshot;
+        lock (_poller.Gate.Sync)
+        {
+            snapshot = LeadshineAxisSnapshot.Read(_api, Card, Axis, _options.Feedback == LeadshineFeedback.Encoder,
+                cycle: -1, Time.GetTimestamp());
+        }
+
+        return BuildStatus(snapshot);
+    }
+
+    private AxisStatus BuildStatus(LeadshineAxisSnapshot snapshot)
+    {
+        bool enabled, homed, homing;
+        lock (_sync)
+        {
+            (enabled, homed, homing) = (_enabled, _homed, _homing);
+        }
+
+        if (snapshot.ReadFailed)
+        {
+            return new AxisStatus(AxisState.Alarm, snapshot.Command, homed, false, false,
+                $"狀態讀取失敗：{Api("get_position_unit")}={snapshot.PositionResult}, " +
+                $"{Api("check_done")}={snapshot.Done}, {Api("get_encoder_unit")}={snapshot.FeedbackResult}");
+        }
+
+        var io = LeadshineAxisIo.Parse(snapshot.Io);
+        var alarm = io.Alarm ? DescribeServoAlarm() : io.EmergencyStop ? "急停 EMG 有效" : null;
+        var state = alarm != null ? AxisState.Alarm
+            : !enabled ? AxisState.Disabled
+            : homing ? AxisState.Homing
+            : snapshot.Done == 0 ? AxisState.Moving
+            : AxisState.Idle;
+        return new AxisStatus(state, snapshot.Command, homed, io.PositiveLimit, io.NegativeLimit, alarm,
+            snapshot.Feedback);
+    }
+
     private AxisStatus EnsureReadyForMotion()
     {
-        var status = GetStatus();
+        var status = ReadStatusDirect();
         return status.State switch
         {
             AxisState.Alarm => throw new MotionFaultException(Name, $"報警中：{status.AlarmReason}"),
@@ -686,7 +722,7 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
             while (true)
             {
                 await Task.Delay(_options.PollInterval, Time, cancellationToken).ConfigureAwait(false);
-                var status = GetStatus();
+                var status = ReadStatusDirect();
                 if (status.State == AxisState.Alarm)
                 {
                     await StopAsync(StopMode.Immediate).ConfigureAwait(false);

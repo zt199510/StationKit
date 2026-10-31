@@ -6,7 +6,7 @@ using StationKit.Safety;
 
 namespace StationKit.Tests.Leadshine;
 
-public class SmcAxisTests
+public sealed class SmcAxisTests : IDisposable
 {
     private static readonly MotionProfile Profile = new(100, 1000, 500);
 
@@ -31,8 +31,19 @@ public class SmcAxisTests
     };
 
     private readonly FakeSmcNativeApi _api = new();
-    private readonly LeadshineCardGate _gate = new();
+    private readonly LeadshineStatusPoller _poller;
     private readonly List<string> _log = [];
+
+    public SmcAxisTests() => _poller = new LeadshineStatusPoller(_api, 0, "SMC");
+
+    public void Dispose() => _poller.Dispose();
+
+    /// <summary>先讓輪詢讀一輪，再取狀態：GetStatus 只讀快照，不刷新就是舊數據。</summary>
+    private AxisStatus Status(LeadshineAxisBase axis)
+    {
+        _poller.RefreshOnce();
+        return axis.GetStatus();
+    }
 
     private static SmcAxisOptions Options(ushort axisNo = 0) => new()
     {
@@ -54,7 +65,7 @@ public class SmcAxisTests
     };
 
     private SmcAxis CreateAxis(SmcAxisOptions? options = null) =>
-        new(_api, options ?? Options(), _gate, log: _log.Add);
+        new(_api, options ?? Options(), _poller, log: _log.Add);
 
     private async Task<SmcAxis> EnabledAxisAsync(SmcAxisOptions? options = null)
     {
@@ -72,12 +83,12 @@ public class SmcAxisTests
 
         Assert.Equal(["smc_write_sevon_pin", "smc_read_sevon_pin"], _api.Calls);
         Assert.Equal(servoOnLevel, _api.ServoOn);
-        Assert.Equal(AxisState.Idle, axis.GetStatus().State);
+        Assert.Equal(AxisState.Idle, Status(axis).State);
 
         await axis.DisableAsync();
 
         Assert.Equal(1 - servoOnLevel, _api.ServoOn);
-        Assert.Equal(AxisState.Disabled, axis.GetStatus().State);
+        Assert.Equal(AxisState.Disabled, Status(axis).State);
     }
 
     [Fact]
@@ -90,7 +101,7 @@ public class SmcAxisTests
 
         Assert.Equal("smc_read_sevon_pin", ex.ApiName);
         Assert.Contains("Expected=sevon=0, Actual=sevon=1", ex.Message);
-        Assert.Equal(AxisState.Disabled, axis.GetStatus().State);
+        Assert.Equal(AxisState.Disabled, Status(axis).State);
     }
 
     [Fact]
@@ -108,7 +119,7 @@ public class SmcAxisTests
 
         Assert.Equal(["smc_set_profile_unit", "smc_pmove_unit"], _api.Calls.Skip(2));
         Assert.Equal((0, 100, 0.1, 0.2, 0), _api.LastProfile);
-        Assert.Equal(80, axis.GetStatus().Position);
+        Assert.Equal(80, Status(axis).Position);
     }
 
     [Fact]
@@ -182,7 +193,7 @@ public class SmcAxisTests
             "smc_set_home_position_unit", "smc_get_home_position_unit",
             "smc_home_move",
         ], _api.Calls.Skip(2));
-        Assert.True(axis.GetStatus().IsHomed);
+        Assert.True(Status(axis).IsHomed);
     }
 
     [Theory]
@@ -206,7 +217,7 @@ public class SmcAxisTests
 
         Assert.Equal(getter, ex.ApiName);
         Assert.DoesNotContain("smc_home_move", _api.Calls);
-        Assert.False(axis.GetStatus().IsHomed);
+        Assert.False(Status(axis).IsHomed);
     }
 
     [Fact]
@@ -219,7 +230,7 @@ public class SmcAxisTests
 
         Assert.Contains("未配置報警復位輸出", ex.Message);
         Assert.Empty(_api.ResetWrites);
-        Assert.Equal(AxisState.Alarm, axis.GetStatus().State);
+        Assert.Equal(AxisState.Alarm, Status(axis).State);
     }
 
     [Fact]
@@ -236,7 +247,7 @@ public class SmcAxisTests
             _api.ResetWrites);
         var calls = _api.Calls.ToList();
         Assert.True(calls.LastIndexOf("smc_write_sevon_pin") < calls.IndexOf("smc_write_outbit"));
-        var status = axis.GetStatus();
+        var status = Status(axis);
         Assert.Equal(AxisState.Disabled, status.State);
         Assert.False(status.IsHomed);
     }
@@ -330,7 +341,7 @@ public class SmcAxisTests
 
         _api.IoStatus = 1u << 8;          // INP
         await move;
-        Assert.Equal(80, axis.GetStatus().Position);
+        Assert.Equal(80, Status(axis).Position);
     }
 
     [Fact]
@@ -369,7 +380,7 @@ public class SmcAxisTests
 
         await axis.MoveAbsoluteAsync(80, Profile);   // IoStatus 裡 INP 一直無效
 
-        Assert.Equal(80, axis.GetStatus().Position);
+        Assert.Equal(80, Status(axis).Position);
     }
 
     [Theory]
@@ -414,7 +425,7 @@ public class SmcAxisTests
         Assert.False(move.IsCompleted);   // 已到位，還在停穩延時裡
 
         await move;
-        Assert.Equal(80, axis.GetStatus().Position);
+        Assert.Equal(80, Status(axis).Position);
     }
 
     [Fact]
@@ -442,7 +453,7 @@ public class SmcAxisTests
     {
         using var axis = await EnabledAxisAsync();
 
-        var status = axis.GetStatus();
+        var status = Status(axis);
 
         Assert.False(status.HasFeedback);
         Assert.True(double.IsNaN(status.FollowingError));
@@ -456,7 +467,7 @@ public class SmcAxisTests
         _api.Position = 100;
         _api.EncoderOffset = -0.02;
 
-        var status = axis.GetStatus();
+        var status = Status(axis);
 
         Assert.Equal(100, status.Position);
         Assert.Equal(99.98, status.FeedbackPosition, 9);
@@ -469,7 +480,7 @@ public class SmcAxisTests
         using var axis = await EnabledAxisAsync(Options() with { Feedback = LeadshineFeedback.Encoder });
         _api.ReturnCodes["smc_get_encoder_unit"] = 3;
 
-        var status = axis.GetStatus();
+        var status = Status(axis);
 
         Assert.Equal(AxisState.Alarm, status.State);
         Assert.Contains("smc_get_encoder_unit=3", status.AlarmReason);
@@ -483,7 +494,7 @@ public class SmcAxisTests
 
         await axis.HomeAsync();
 
-        var status = axis.GetStatus();
+        var status = Status(axis);
         Assert.True(status.IsHomed);
         Assert.Equal(0, status.FeedbackPosition);
         Assert.Contains("smc_set_encoder_unit", _api.Calls);
@@ -500,7 +511,7 @@ public class SmcAxisTests
 
         Assert.Equal("smc_get_encoder_unit", ex.ApiName);
         Assert.Contains("Expected=encoder=0, Actual=encoder=1234.5", ex.Message);
-        Assert.False(axis.GetStatus().IsHomed);
+        Assert.False(Status(axis).IsHomed);
     }
 
     [Fact]

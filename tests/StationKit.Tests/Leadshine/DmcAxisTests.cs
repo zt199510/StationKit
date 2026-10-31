@@ -6,7 +6,7 @@ using StationKit.Safety;
 
 namespace StationKit.Tests.Leadshine;
 
-public class DmcAxisTests
+public sealed class DmcAxisTests : IDisposable
 {
     private static readonly MotionProfile Profile = new(100, 1000, 500);
 
@@ -22,11 +22,22 @@ public class DmcAxisTests
     };
 
     private readonly FakeDmcNativeApi _api = new();
-    private readonly LeadshineCardGate _gate = new();
+    private readonly LeadshineStatusPoller _poller;
     private readonly List<string> _log = [];
 
+    public DmcAxisTests() => _poller = new LeadshineStatusPoller(_api, 0, "DMC");
+
+    public void Dispose() => _poller.Dispose();
+
+    /// <summary>先讓輪詢讀一輪，再取狀態：GetStatus 只讀快照，不刷新就是舊數據。</summary>
+    private AxisStatus Status(LeadshineAxisBase axis)
+    {
+        _poller.RefreshOnce();
+        return axis.GetStatus();
+    }
+
     private DmcAxis CreateAxis(ushort axisNo = 0, TimeSpan? motionTimeout = null) =>
-        new(_api, CreateOptions(axisNo, motionTimeout), _gate, log: _log.Add);
+        new(_api, CreateOptions(axisNo, motionTimeout), _poller, log: _log.Add);
 
     private static DmcAxisOptions CreateOptions(ushort axisNo = 0, TimeSpan? motionTimeout = null) => new()
     {
@@ -59,8 +70,8 @@ public class DmcAxisTests
         Assert.Equal(["nmc_set_axis_enable", "dmc_set_profile_unit", "dmc_pmove_unit"], _api.Calls);
         // 雷賽用加減速時間：t = v / a
         Assert.Equal((0, 100, 0.1, 0.2, 0), _api.LastProfile);
-        Assert.Equal(120, axis.GetStatus().Position);
-        Assert.Equal(AxisState.Idle, axis.GetStatus().State);
+        Assert.Equal(120, Status(axis).Position);
+        Assert.Equal(AxisState.Idle, Status(axis).State);
     }
 
     [Fact]
@@ -180,8 +191,8 @@ public class DmcAxisTests
         await axis.HomeAsync();
 
         Assert.Equal(["nmc_set_axis_enable", "nmc_set_home_profile", "nmc_get_home_profile", "dmc_home_move"], _api.Calls);
-        Assert.True(axis.GetStatus().IsHomed);
-        Assert.Equal(0, axis.GetStatus().Position);
+        Assert.True(Status(axis).IsHomed);
+        Assert.Equal(0, Status(axis).Position);
     }
 
     [Fact]
@@ -194,7 +205,7 @@ public class DmcAxisTests
 
         Assert.Contains("回讀不一致", ex.Message);
         Assert.DoesNotContain("dmc_home_move", _api.Calls);
-        Assert.False(axis.GetStatus().IsHomed);
+        Assert.False(Status(axis).IsHomed);
     }
 
     [Fact]
@@ -205,7 +216,7 @@ public class DmcAxisTests
 
         await axis.HomeAsync();
 
-        Assert.True(axis.GetStatus().IsHomed);
+        Assert.True(Status(axis).IsHomed);
         Assert.Contains(_log, line => line.StartsWith("[警告]", StringComparison.Ordinal) && line.Contains("16088"));
     }
 
@@ -215,11 +226,11 @@ public class DmcAxisTests
         using var axis = await EnabledAxisAsync();
         await axis.HomeAsync();
         _api.IoStatus = 1;
-        Assert.Equal(AxisState.Alarm, axis.GetStatus().State);
+        Assert.Equal(AxisState.Alarm, Status(axis).State);
 
         await axis.ResetAlarmAsync();
 
-        var status = axis.GetStatus();
+        var status = Status(axis);
         Assert.Equal(AxisState.Disabled, status.State);
         Assert.False(status.IsHomed);
     }
@@ -314,7 +325,7 @@ public class DmcAxisTests
         Assert.Equal(LeadshineStopMode.Decelerated, _api.LastStopMode);
         // 減速段走完才返回：返回時 check_done 已經是 1
         Assert.Equal(1, _api.CheckDone(0, 0));
-        Assert.Equal(AxisState.Idle, axis.GetStatus().State);
+        Assert.Equal(AxisState.Idle, Status(axis).State);
     }
 
     [Fact]
@@ -384,21 +395,21 @@ public class DmcAxisTests
 
         await axis.MoveAbsoluteAsync(10, Profile);
 
-        Assert.Equal(10, axis.GetStatus().Position);
+        Assert.Equal(10, Status(axis).Position);
     }
 
     [Fact]
     public async Task 總線軸回零_不改寫編碼器_反饋由驅動器維護()
     {
         _api.EncoderOffset = 0.003;
-        using var axis = new DmcAxis(_api, CreateOptions() with { Feedback = LeadshineFeedback.Encoder }, _gate,
+        using var axis = new DmcAxis(_api, CreateOptions() with { Feedback = LeadshineFeedback.Encoder }, _poller,
             log: _log.Add);
         await axis.EnableAsync();
 
         await axis.HomeAsync();
 
         Assert.DoesNotContain("dmc_set_encoder_unit", _api.Calls);
-        Assert.Equal(0.003, axis.GetStatus().FeedbackPosition, 9);
+        Assert.Equal(0.003, Status(axis).FeedbackPosition, 9);
     }
 
     private DmcAxis AbsoluteAxis(DmcAxisOptions? options = null) => new(_api, options ?? CreateOptions() with
@@ -407,7 +418,7 @@ public class DmcAxisTests
         HomeMethod = LeadshineHomeMethod.AbsoluteEncoder,
         HomeProfile = null,
         AbsoluteHomeProfile = MotionProfile.Symmetric(50, 500),
-    }, _gate, log: _log.Add);
+    }, _poller, log: _log.Add);
 
     /// <summary>上電狀態：指令位置 0，編碼器絕對位置為 <paramref name="absolute"/>。</summary>
     private void PowerOnAt(double absolute)
@@ -432,7 +443,7 @@ public class DmcAxisTests
         Assert.Equal(["dmc_set_position_unit", "dmc_set_profile_unit", "dmc_pmove_unit"],
             calls.Where(c => c != "dmc_get_encoder_unit"));
         Assert.DoesNotContain("dmc_home_move", _api.Calls);
-        var status = axis.GetStatus();
+        var status = Status(axis);
         Assert.True(status.IsHomed);
         Assert.Equal(0, status.Position);
         Assert.Equal(0, status.FeedbackPosition, 9);
@@ -452,7 +463,7 @@ public class DmcAxisTests
         Assert.Contains("絕對位置 5000 不在軟限位 [-1, 300] 內", ex.Message);
         Assert.DoesNotContain("dmc_set_position_unit", _api.Calls);
         Assert.DoesNotContain("dmc_pmove_unit", _api.Calls);
-        Assert.False(axis.GetStatus().IsHomed);
+        Assert.False(Status(axis).IsHomed);
     }
 
     [Fact]
@@ -481,7 +492,7 @@ public class DmcAxisTests
 
         Assert.Equal("dmc_get_position_unit", ex.ApiName);
         Assert.DoesNotContain("dmc_pmove_unit", _api.Calls);
-        Assert.False(axis.GetStatus().IsHomed);
+        Assert.False(Status(axis).IsHomed);
     }
 
     [Fact]
@@ -498,7 +509,7 @@ public class DmcAxisTests
         _api.IoStatus = 1;
 
         await Assert.ThrowsAsync<MotionFaultException>(() => home);
-        Assert.False(axis.GetStatus().IsHomed);
+        Assert.False(Status(axis).IsHomed);
     }
 
     [Fact]

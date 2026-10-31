@@ -20,6 +20,7 @@ internal abstract class FakeLeadshineMotionApi(string prefix) : ILeadshineMotion
     private ushort _emgLogic;
     private LeadshineSoftLimit _softLimit;
     private LeadshineInpMode _inp;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> _reads = new();
     private int _concurrent;
     private int _maxConcurrent;
 
@@ -156,6 +157,7 @@ internal abstract class FakeLeadshineMotionApi(string prefix) : ILeadshineMotion
 
     public short CheckDone(ushort cardNo, ushort axisNo)
     {
+        CountRead($"{prefix}_check_done", axisNo);
         lock (_sync)
         {
             if (_pollsUntilDone > 0)
@@ -190,6 +192,7 @@ internal abstract class FakeLeadshineMotionApi(string prefix) : ILeadshineMotion
 
     public short ReadPosition(ushort cardNo, ushort axisNo, out double position)
     {
+        CountRead($"{prefix}_get_position_unit", axisNo);
         lock (_sync)
         {
             position = Position;
@@ -241,8 +244,19 @@ internal abstract class FakeLeadshineMotionApi(string prefix) : ILeadshineMotion
 
     public short ReadAxisIoStatus(ushort cardNo, ushort axisNo, out uint status)
     {
+        CountRead($"{prefix}_axis_io_status", axisNo);
         status = IoStatus;
         return 0;
+    }
+
+    private void CountRead(string apiName, ushort axisNo)
+    {
+        if (ThrowOnRead?.Invoke(axisNo) == true)
+        {
+            throw new InvalidOperationException($"模擬通訊中斷：{apiName} axis={axisNo}");
+        }
+
+        _reads.AddOrUpdate(apiName, 1, (_, count) => count + 1);
     }
 
     /// <summary>開始模擬回零：若干次輪詢後位置歸零，回零結果變為 1。</summary>
@@ -269,6 +283,14 @@ internal abstract class FakeLeadshineMotionApi(string prefix) : ILeadshineMotion
             return 0;
         }
     }
+
+    /// <summary>讀取類函數（狀態輪詢用到的）的調用次數，不計入 <see cref="Calls"/>，避免干擾順序斷言。</summary>
+    public int ReadCount(string apiName) => _reads.TryGetValue(apiName, out var count) ? count : 0;
+
+    public int TotalReads => _reads.Values.Sum();
+
+    /// <summary>模擬某根軸讀取時 DLL 拋異常（例如通訊中斷）。</summary>
+    public Func<ushort, bool>? ThrowOnRead { get; set; }
 
     /// <summary>同時在 SDK 內部的調用數的最大值，用於驗證卡鎖：大於 1 說明有併發調用。</summary>
     public int MaxConcurrentCalls => _maxConcurrent;
