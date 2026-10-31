@@ -400,6 +400,40 @@ public class SmcAxisTests
         Assert.Throws<ArgumentException>(() => CreateAxis(Options() with { InPositionSignal = new(true, 2) }));
     }
 
+    [Fact]
+    public async Task 未啟用INP且配置停穩延時_到位後再等延時才返回()
+    {
+        using var axis = await EnabledAxisAsync(Options() with { SettleTime = TimeSpan.FromMilliseconds(200) });
+
+        var move = axis.MoveAbsoluteAsync(80, Profile);
+        await WaitUntilAsync(() => _api.CheckDone(0, 0) == 1);
+        await Task.Delay(50);
+        Assert.False(move.IsCompleted);   // 已到位，還在停穩延時裡
+
+        await move;
+        Assert.Equal(80, axis.GetStatus().Position);
+    }
+
+    [Fact]
+    public void 啟用INP又配置停穩延時_構造時拒絕()
+    {
+        var options = Options() with
+        {
+            InPositionSignal = new(Enabled: true, Logic: 0),
+            SettleTime = TimeSpan.FromMilliseconds(50),
+        };
+
+        var ex = Assert.Throws<ArgumentException>(() => CreateAxis(options));
+
+        Assert.Contains("已啟用 INP，不能再配置停穩延時", ex.Message);
+    }
+
+    [Fact]
+    public void 停穩延時為負數_構造時拒絕()
+    {
+        Assert.Throws<ArgumentException>(() => CreateAxis(Options() with { SettleTime = TimeSpan.FromMilliseconds(-1) }));
+    }
+
     private static async Task WaitUntilAsync(Func<bool> condition)
     {
         var deadline = DateTime.UtcNow.AddSeconds(5);

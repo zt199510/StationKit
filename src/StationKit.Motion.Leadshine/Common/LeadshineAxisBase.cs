@@ -44,6 +44,17 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
         {
             throw new ArgumentException($"{options.Name}：INP 有效電平只能是 0 或 1，實際 {options.InPositionSignal.Logic}");
         }
+
+        if (options.SettleTime < TimeSpan.Zero)
+        {
+            throw new ArgumentException($"{options.Name}：停穩延時不能為負數（{options.SettleTime}）");
+        }
+
+        if (options.InPositionSignal.Enabled && options.SettleTime > TimeSpan.Zero)
+        {
+            // 兩個都配，出了問題分不清是哪個起作用；有 INP 就以 INP 為準
+            throw new ArgumentException($"{options.Name}：已啟用 INP，不能再配置停穩延時");
+        }
     }
 
     public string Name => _options.Name;
@@ -205,6 +216,11 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
         if (_options.InPositionSignal.Enabled)
         {
             await WaitInPositionSignalAsync(cancellationToken).ConfigureAwait(false);
+        }
+        else if (_options.SettleTime > TimeSpan.Zero)
+        {
+            // 沒接 INP 時的兜底：固定延時不知道電機是否真的停穩，能接 INP 的機台應該接上
+            await Task.Delay(_options.SettleTime, Time, cancellationToken).ConfigureAwait(false);
         }
     }
 

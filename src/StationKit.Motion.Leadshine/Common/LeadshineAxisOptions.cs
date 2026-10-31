@@ -23,6 +23,13 @@ public abstract record LeadshineAxisOptions
     /// <summary>check_done 之後等待 INP 有效的最長時間，超時報故障。</summary>
     public TimeSpan InPositionTimeout { get; init; } = TimeSpan.FromMilliseconds(500);
 
+    /// <summary>
+    /// 停穩延時：未啟用 INP 時，到位後固定再等這麼久才返回，給伺服追完跟隨誤差。
+    /// 集中在軸配置裡，代替業務代碼裡散落的 Sleep。啟用 INP 時不允許配置，以 INP 為準。
+    /// 默認 0：上下料等不需要停穩的軸不浪費節拍。
+    /// </summary>
+    public TimeSpan SettleTime { get; init; }
+
     /// <summary>起始速度。</summary>
     public double MinVelocity { get; init; }
 
