@@ -38,6 +38,25 @@ public sealed class DmcController
     /// <summary>這張卡的集中輪詢器，控制器和它創建的所有軸共用（包括卡鎖）。<see cref="Open"/> 成功後啟動。</summary>
     public LeadshineStatusPoller Poller { get; }
 
+    /// <summary>本卡的通用 IO；調用 <see cref="CreateIoBoard"/> 之前為 null。</summary>
+    public LeadshineIoBoard? IoBoard { get; private set; }
+
+    /// <summary>
+    /// 創建本卡的通用 IO，每卡只能創建一次。端口數決定每輪輪詢讀取多少個端口（每個 32 位），
+    /// 只配置實際用到的，以太網卡上每多一個端口每輪多一次調用。
+    /// </summary>
+    public LeadshineIoBoard CreateIoBoard(ushort inputPorts, ushort outputPorts, string? name = null)
+    {
+        if (IoBoard != null)
+        {
+            throw new InvalidOperationException($"DMC 卡{CardNo} 的 IO 已經創建過");
+        }
+
+        IoBoard = new LeadshineIoBoard(_rawApi, Poller, "DMC", name ?? $"DMC卡{CardNo} IO", inputPorts,
+            outputPorts, _log);
+        return IoBoard;
+    }
+
     /// <summary>連接控制卡，返回總軸數。初始化順序沿用現場驗證過的：先關閉，再初始化，再建立以太網連接。</summary>
     public uint Open()
     {

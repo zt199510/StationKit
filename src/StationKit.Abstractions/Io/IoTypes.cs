@@ -15,8 +15,14 @@ public sealed record IoPointConfig(string Name, ushort Bit, bool? ActiveHigh);
 /// <summary>
 /// 一個 IO 點在某一輪讀取中的電平。<see cref="Cycle"/> 是讀取<b>開始時</b>的週期號，用來排除下發前讀的數據；
 /// <see cref="Fault"/> 不為 null 時數據不可信，<see cref="Level"/> 沒有意義。
+/// <see cref="Cycle"/> 為 0 表示還沒讀到過數據（例如輪詢剛啟動）：讀取和寫入拒絕，等待繼續等到超時。
 /// </summary>
-public readonly record struct IoSample(long Cycle, bool Level, string? Fault = null);
+public readonly record struct IoSample(long Cycle, bool Level, string? Fault = null)
+{
+    public static IoSample NoData => new(0, false);
+
+    public bool HasData => Cycle > 0;
+}
 
 /// <summary>給界面用的讀數：數據不可信時 <see cref="Value"/> 為 null，<see cref="FaultReason"/> 寫明原因。</summary>
 public readonly record struct IoReading(bool? Value, string? FaultReason)

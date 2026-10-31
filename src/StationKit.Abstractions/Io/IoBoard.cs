@@ -55,8 +55,8 @@ public abstract class IoBoard
     /// </summary>
     public void ReserveOutput(ushort bit, string owner)
     {
+        // 不檢查位號範圍：登記只為防止衝突，報警復位這類位不一定在輪詢的端口裡
         ArgumentException.ThrowIfNullOrWhiteSpace(owner);
-        ValidateAddress(IoKind.Output, bit);
         lock (_sync)
         {
             if (!_outputOwners.TryAdd(bit, owner))
@@ -111,13 +111,13 @@ public abstract class IoBoard
         public bool Read()
         {
             var sample = Board.Sample(kind, Bit);
-            return sample.Fault is { } fault ? throw new IoFaultException(Name, fault) : ToValue(sample.Level);
+            return Unusable(sample) is { } reason ? throw new IoFaultException(Name, reason) : ToValue(sample.Level);
         }
 
         public IoReading GetReading()
         {
             var sample = Board.Sample(kind, Bit);
-            return sample.Fault is { } fault ? new(null, fault) : new(ToValue(sample.Level), null);
+            return Unusable(sample) is { } reason ? new(null, reason) : new(ToValue(sample.Level), null);
         }
 
         public Task WaitAsync(bool expected, TimeSpan timeout, TimeSpan stableTime = default,
@@ -138,6 +138,10 @@ public abstract class IoBoard
 
         protected bool ToValue(bool level) => level == ActiveHigh;
 
+        /// <summary>數據不能用的原因：不可信或還沒有數據；能用時返回 null。</summary>
+        protected string? Unusable(IoSample sample) =>
+            sample.Fault ?? (sample.HasData ? null : $"{Board.Name} 尚無 IO 數據");
+
         /// <summary>等到 <paramref name="fence"/> 之後讀到的邏輯值等於 expected 並保持 stableTime。</summary>
         protected async Task WaitForAsync(long fence, bool expected, TimeSpan timeout, TimeSpan stableTime,
             CancellationToken cancellationToken)
@@ -154,7 +158,8 @@ public abstract class IoBoard
                     throw new IoFaultException(Name, fault);
                 }
 
-                // 圍欄之前讀的數據不參與判斷：舊數據裡已經滿足的條件不算（docs/design/digital-io.md 4.1）
+                // 圍欄之前讀的數據不參與判斷：舊數據裡已經滿足的條件不算（docs/design/digital-io.md 4.1）；
+                // 還沒有數據（週期號 0）同樣不參與判斷，繼續等到超時，與軸剛啟動輪詢時的行為一致
                 bool? actual = sample.Cycle > fence ? ToValue(sample.Level) : null;
                 if (actual == expected)
                 {
@@ -195,7 +200,7 @@ public abstract class IoBoard
         public async Task SetAsync(bool value, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (Board.Sample(IoKind.Output, Bit).Fault is { } fault)
+            if (Unusable(Board.Sample(IoKind.Output, Bit)) is { } fault)
             {
                 // 卡的狀態未知時不下發，與軸「故障時除停止外一律拒絕」一致
                 throw new IoFaultException(Name, $"拒絕寫入：{fault}");
