@@ -99,7 +99,7 @@ public sealed class CylinderTests : IDisposable
         var extend = cylinder.ExtendAsync();
         await _clock.AdvanceUntilDoneAsync(extend, TimeSpan.FromMilliseconds(600));
 
-        var ex = await Assert.ThrowsAsync<IoFaultException>(() => extend);
+        var ex = await Assert.ThrowsAsync<CylinderFaultException>(() => extend);
         Assert.Equal("上料氣缸", ex.Signal);
         Assert.Contains("伸出超時", ex.Message);
         Assert.Contains("伸出到位 未有效", ex.Message);
@@ -117,7 +117,7 @@ public sealed class CylinderTests : IDisposable
         var extend = cylinder.ExtendAsync();
         await _clock.AdvanceUntilDoneAsync(extend, TimeSpan.FromMilliseconds(600));
 
-        var ex = await Assert.ThrowsAsync<IoFaultException>(() => extend);
+        var ex = await Assert.ThrowsAsync<CylinderFaultException>(() => extend);
         Assert.Contains("縮回到位 未消失", ex.Message);
     }
 
@@ -131,7 +131,7 @@ public sealed class CylinderTests : IDisposable
         Assert.Equal(CylinderState.Fault, status.State);
         Assert.Contains("同時有效", status.FaultReason);
 
-        var ex = await Assert.ThrowsAsync<IoFaultException>(() => cylinder.ExtendAsync());
+        var ex = await Assert.ThrowsAsync<CylinderFaultException>(() => cylinder.ExtendAsync());
         Assert.Contains("拒絕伸出", ex.Message);
         Assert.False(_board.GetOutputLevel(ExtendValve.Bit));
     }

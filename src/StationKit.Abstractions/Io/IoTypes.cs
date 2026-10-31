@@ -45,3 +45,9 @@ public sealed class IoTimeoutException(string signal, bool expected, bool? actua
 
     private static string Describe(bool value) => value ? "有效" : "無效";
 }
+
+/// <summary>氣缸動作失敗：超時、兩個到位同時有效。<see cref="IoFaultException.Signal"/> 是氣缸名。</summary>
+public sealed class CylinderFaultException(string cylinder, string reason) : IoFaultException(cylinder, reason);
+
+/// <summary>與上下游的握手失敗。<see cref="IoFaultException.Signal"/> 是握手名。</summary>
+public sealed class HandshakeFaultException(string handshake, string reason) : IoFaultException(handshake, reason);

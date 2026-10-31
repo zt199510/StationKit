@@ -126,7 +126,7 @@ public sealed class Cylinder
         if (_config.ExtendedSensor != null && _config.RetractedSensor != null &&
             _config.ExtendedSensor.Read() && _config.RetractedSensor.Read())
         {
-            throw new IoFaultException(Name, $"伸出到位和縮回到位同時有效，位置不可知，拒絕{direction}；{Remedy}");
+            throw new CylinderFaultException(Name, $"伸出到位和縮回到位同時有效，位置不可知，拒絕{direction}；{Remedy}");
         }
 
         var start = _time.GetTimestamp();
@@ -154,7 +154,7 @@ public sealed class Cylinder
             .ConfigureAwait(false);
         if (opposite?.Read() == true)
         {
-            throw new IoFaultException(Name, $"{direction}到位後另一端到位又有效，兩個到位同時有效；{Remedy}");
+            throw new CylinderFaultException(Name, $"{direction}到位後另一端到位又有效，兩個到位同時有效；{Remedy}");
         }
     }
 
@@ -188,7 +188,7 @@ public sealed class Cylinder
         catch (IoTimeoutException ex)
         {
             var what = expected ? $"{sensor.Name} 未有效" : $"{sensor.Name} 未消失（氣缸沒有離開原位）";
-            throw new IoFaultException(Name,
+            throw new CylinderFaultException(Name,
                 $"{direction}超時：{_config.Timeout.TotalMilliseconds:0} ms 內 {what}（{ex.Reason}）；{Remedy}");
         }
     }

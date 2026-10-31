@@ -127,7 +127,18 @@ public sealed class GuardedAxis(IAxis inner, AxisSafetyConfig config, IEnumerabl
     {
         foreach (var interlock in _interlocks)
         {
-            if (interlock.CheckBlocked(request) is { } reason)
+            string? reason;
+            try
+            {
+                reason = interlock.CheckBlocked(request);
+            }
+            catch (Exception ex)
+            {
+                // 規則本身出錯（例如讀 IO 拋異常）：軸沒有動，是「拒絕」不是運動故障，工站按拒絕處理
+                reason = $"互鎖檢查異常：{ex.Message}";
+            }
+
+            if (reason != null)
             {
                 throw new MotionRejectedException(Name, $"[{interlock.Name}] {reason}");
             }

@@ -1,3 +1,4 @@
+using StationKit.Abstractions.Io;
 using StationKit.Abstractions.Motion;
 
 namespace StationKit.Abstractions.Safety;
@@ -35,6 +36,35 @@ public static class Interlock
 {
     public static IMotionInterlock Create(string name, Func<MotionRequest, string?> check) =>
         new DelegateInterlock(name, check);
+
+    /// <summary>
+    /// 要求輸入信號為 <paramref name="expected"/> 才允許運動，例如「安全門關閉」。
+    /// 數據不可信（卡故障、過期）時<b>阻止</b>，不當作滿足。
+    /// <paramref name="kinds"/> 為 null 時對所有運動生效。
+    /// 只在下發前檢查一次：運動中信號變化（例如開門）不會停軸，必須由硬件安全回路處理。
+    /// </summary>
+    public static IMotionInterlock RequireInput(string name, IDigitalInput input, bool expected = true,
+        IReadOnlyCollection<MotionKind>? kinds = null)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+        return new DelegateInterlock(name, request =>
+        {
+            if (kinds != null && !kinds.Contains(request.Kind))
+            {
+                return null;
+            }
+
+            var reading = input.GetReading();
+            if (reading.Value is not { } value)
+            {
+                return $"{input.Name} 狀態不可信：{reading.FaultReason}";
+            }
+
+            return value == expected ? null : $"需要 {input.Name} {Describe(expected)}，當前{Describe(value)}";
+        });
+    }
+
+    private static string Describe(bool value) => value ? "有效" : "無效";
 
     private sealed class DelegateInterlock(string name, Func<MotionRequest, string?> check) : IMotionInterlock
     {

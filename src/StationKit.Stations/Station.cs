@@ -188,7 +188,8 @@ public abstract class Station
 
     /// <summary>把異常映射成報警代碼。子類可覆蓋以細分。</summary>
     protected virtual string ClassifyFault(Exception exception) =>
-        exception is ResourceTimeoutException ? StationAlarms.ResourceTimeout : StationAlarms.CycleFault;
+        IoAlarms.Classify(exception) ??
+        (exception is ResourceTimeoutException ? StationAlarms.ResourceTimeout : StationAlarms.CycleFault);
 
     internal async Task CheckpointAsync(CancellationToken token)
     {

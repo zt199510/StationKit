@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\StationKit.Alarms\StationKit.Alarms.csproj" />
+    <ProjectReference Include="..\StationKit.Abstractions\StationKit.Abstractions.csproj" />
   </ItemGroup>
 
   <PropertyGroup>
