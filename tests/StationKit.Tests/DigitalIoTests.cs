@@ -10,9 +10,14 @@ public sealed class DigitalIoTests : IDisposable
     private static readonly TimeSpan Timeout = TimeSpan.FromMilliseconds(500);
 
     private readonly FakeTimeProvider _time = new();
+    private readonly FakeClockStepper _clock;
     private readonly SimIoBoard _board;
 
-    public DigitalIoTests() => _board = new SimIoBoard(timeProvider: _time);
+    public DigitalIoTests()
+    {
+        _board = new SimIoBoard(timeProvider: _time);
+        _clock = new FakeClockStepper(_time, Period);
+    }
 
     public void Dispose() => _board.Dispose();
 
@@ -75,7 +80,7 @@ public sealed class DigitalIoTests : IDisposable
         var wait = done.WaitAsync(true, Timeout);
         Assert.False(wait.IsCompleted);
 
-        await AdvanceUntilDoneAsync(wait, Period);
+        await _clock.AdvanceUntilDoneAsync(wait, Period);
         Assert.True(wait.IsCompletedSuccessfully);
     }
 
@@ -85,7 +90,7 @@ public sealed class DigitalIoTests : IDisposable
         var vacuum = _board.CreateInput(new("真空", 1, ActiveHigh: true));
 
         var wait = vacuum.WaitAsync(true, Timeout);
-        await AdvanceAsync(Period * 3);
+        await _clock.AdvanceAsync(Period * 3);
         Assert.False(wait.IsCompleted);
 
         _board.SetInputLevel(1, true);
@@ -100,16 +105,16 @@ public sealed class DigitalIoTests : IDisposable
 
         var wait = sensor.WaitAsync(true, Timeout, stableTime: stable);
         _board.SetInputLevel(2, true);
-        await AdvanceAsync(TimeSpan.FromMilliseconds(15));
+        await _clock.AdvanceAsync(TimeSpan.FromMilliseconds(15));
         // 按週期取樣，短於一輪的毛刺本來就看不到（實機也一樣），所以抖動持續一輪
         _board.SetInputLevel(2, false);
-        await AdvanceAsync(Period);
+        await _clock.AdvanceAsync(Period);
         _board.SetInputLevel(2, true);
-        await AdvanceAsync(TimeSpan.FromMilliseconds(15));
+        await _clock.AdvanceAsync(TimeSpan.FromMilliseconds(15));
         // 從抖動算起只保持了 15 ms，不夠 20 ms
         Assert.False(wait.IsCompleted);
 
-        await AdvanceUntilDoneAsync(wait, TimeSpan.FromMilliseconds(30));
+        await _clock.AdvanceUntilDoneAsync(wait, TimeSpan.FromMilliseconds(30));
         Assert.True(wait.IsCompletedSuccessfully);
     }
 
@@ -119,7 +124,7 @@ public sealed class DigitalIoTests : IDisposable
         var sensor = _board.CreateInput(new("伸出到位", 4, ActiveHigh: true));
 
         var wait = sensor.WaitAsync(true, TimeSpan.FromMilliseconds(50));
-        await AdvanceUntilDoneAsync(wait, TimeSpan.FromMilliseconds(100));
+        await _clock.AdvanceUntilDoneAsync(wait, TimeSpan.FromMilliseconds(100));
 
         var ex = await Assert.ThrowsAsync<IoTimeoutException>(() => wait);
         Assert.True(ex.Expected);
@@ -152,7 +157,7 @@ public sealed class DigitalIoTests : IDisposable
         Assert.False(valve.Read());
         Assert.False(set.IsCompleted);
 
-        await AdvanceUntilDoneAsync(set, Period);
+        await _clock.AdvanceUntilDoneAsync(set, Period);
         await set;
         Assert.True(valve.Read());
     }
@@ -165,7 +170,7 @@ public sealed class DigitalIoTests : IDisposable
         Assert.True(lamp.Read());
 
         var set = lamp.SetAsync(false);
-        await AdvanceUntilDoneAsync(set, Period);
+        await _clock.AdvanceUntilDoneAsync(set, Period);
         await set;
         Assert.True(_board.GetOutputLevel(1));
     }
@@ -177,7 +182,7 @@ public sealed class DigitalIoTests : IDisposable
         _board.StickOutput(0, false);
 
         var set = valve.SetAsync(true);
-        await AdvanceUntilDoneAsync(set, IoBoard.DefaultOutputVerifyTimeout * 2);
+        await _clock.AdvanceUntilDoneAsync(set, IoBoard.DefaultOutputVerifyTimeout * 2);
 
         var ex = await Assert.ThrowsAsync<IoFaultException>(() => set);
         Assert.Contains("回讀仍為無效", ex.Message);
@@ -201,28 +206,5 @@ public sealed class DigitalIoTests : IDisposable
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => valve.SetAsync(true, new(canceled: true)));
         Assert.False(_board.GetOutputLevel(0));
-    }
-
-    /// <summary>
-    /// 等待的後續在線程池上執行：每推進一步給它一點真實時間重新掛上等待，
-    /// 否則連續推進時它來不及觀察中間的週期。
-    /// </summary>
-    private async Task AdvanceAsync(TimeSpan duration)
-    {
-        for (var elapsed = TimeSpan.Zero; elapsed < duration; elapsed += Period)
-        {
-            _time.Advance(Period);
-            await Task.Delay(2);
-        }
-    }
-
-    /// <summary>逐週期推進，直到任務結束或推進了 <paramref name="max"/>。</summary>
-    private async Task AdvanceUntilDoneAsync(Task task, TimeSpan max)
-    {
-        for (var elapsed = TimeSpan.Zero; !task.IsCompleted && elapsed <= max; elapsed += Period)
-        {
-            _time.Advance(Period);
-            await Task.WhenAny(task, Task.Delay(20));
-        }
     }
 }

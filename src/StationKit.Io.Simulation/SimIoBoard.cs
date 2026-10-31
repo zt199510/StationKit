@@ -39,6 +39,11 @@ public sealed class SimIoBoard : IoBoard, IDisposable
         _timer = Time.CreateTimer(_ => Refresh(), null, interval, interval);
     }
 
+    /// <summary>
+    /// 輸出口電平被寫入後觸發（參數：位號、實際電平），在鎖外調用。模擬設備（例如 <see cref="SimCylinder"/>）據此動作。
+    /// </summary>
+    public event Action<ushort, bool>? OutputWritten;
+
     /// <summary>卡故障原因；正常時為 null。</summary>
     public string? Fault => _fault;
 
@@ -149,6 +154,7 @@ public sealed class SimIoBoard : IoBoard, IDisposable
 
     protected override void WriteOutput(ushort bit, bool level)
     {
+        bool actual;
         lock (_sync)
         {
             if (_fault is { } fault)
@@ -157,8 +163,11 @@ public sealed class SimIoBoard : IoBoard, IDisposable
             }
 
             // 卡死的輸出口：寫入「成功」但電平不變，只有回讀核對能發現
-            _outputs[bit] = _stuckOutputs.TryGetValue(bit, out var stuck) ? stuck : level;
+            actual = _stuckOutputs.TryGetValue(bit, out var stuck) ? stuck : level;
+            _outputs[bit] = actual;
         }
+
+        OutputWritten?.Invoke(bit, actual);
     }
 
     protected override void ValidateAddress(IoKind kind, ushort bit)
