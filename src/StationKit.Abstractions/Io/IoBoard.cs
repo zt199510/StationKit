@@ -16,7 +16,9 @@ public abstract class IoBoard
     public static readonly TimeSpan DefaultOutputVerifyTimeout = TimeSpan.FromMilliseconds(100);
 
     private readonly object _sync = new();
+    private readonly object _filterSync = new();
     private readonly Dictionary<ushort, string> _outputOwners = [];
+    private FilteredInput[] _filters = [];
 
     protected IoBoard(string name, TimeProvider? timeProvider = null)
     {
@@ -38,7 +40,20 @@ public abstract class IoBoard
     public IDigitalInput CreateInput(IoPointConfig config)
     {
         var activeHigh = Validate(config, IoKind.Input);
-        return new DigitalInput(this, config.Name, IoKind.Input, config.Bit, activeHigh);
+        if (!config.HasDebounce)
+        {
+            return new DigitalInput(this, config.Name, IoKind.Input, config.Bit, activeHigh);
+        }
+
+        var input = new FilteredInput(this, config, activeHigh);
+        lock (_filterSync)
+        {
+            // 寫時複製：UpdateFilters 遍歷時不會被修改。創建時立即評估一次，不用等下一輪才有數據
+            _filters = [.. _filters, input];
+            input.Update();
+        }
+
+        return input;
     }
 
     /// <summary>創建輸出並登記位號：同一位只能有一個所有者。</summary>
@@ -79,6 +94,21 @@ public abstract class IoBoard
     /// <summary>下發輸出電平。失敗時拋 <see cref="IoFaultException"/>，不返回 false。</summary>
     protected abstract void WriteOutput(ushort bit, bool level);
 
+    /// <summary>
+    /// 更新所有消抖輸入的過濾狀態。派生類每發佈一輪數據後調用一次（數據變為不可信時也要調用，讓過濾從頭開始），
+    /// 並且在喚醒等待方之前調用：等待方被喚醒後讀到的是本輪過濾後的值。
+    /// </summary>
+    protected void UpdateFilters()
+    {
+        lock (_filterSync)
+        {
+            foreach (var input in _filters)
+            {
+                input.Update();
+            }
+        }
+    }
+
     /// <summary>檢查位號是否在範圍內，超出時拋 <see cref="ArgumentOutOfRangeException"/>。</summary>
     protected virtual void ValidateAddress(IoKind kind, ushort bit)
     {
@@ -92,6 +122,17 @@ public abstract class IoBoard
         {
             // 電平猜錯，「門已關」和「門打開」就反了
             throw new ArgumentException($"信號 {config.Name} 的有效電平未指定", nameof(config));
+        }
+
+        if (config.ActivateDelay < TimeSpan.Zero || config.DeactivateDelay < TimeSpan.Zero)
+        {
+            throw new ArgumentException($"信號 {config.Name} 的消抖延時不能為負", nameof(config));
+        }
+
+        if (kind == IoKind.Output && config.HasDebounce)
+        {
+            // 輸出的回讀核對不需要消抖，延時只會拖慢核對
+            throw new ArgumentException($"輸出 {config.Name} 不支持消抖延時", nameof(config));
         }
 
         ValidateAddress(kind, config.Bit);
@@ -110,13 +151,13 @@ public abstract class IoBoard
 
         public bool Read()
         {
-            var sample = Board.Sample(kind, Bit);
+            var sample = Current();
             return Unusable(sample) is { } reason ? throw new IoFaultException(Name, reason) : ToValue(sample.Level);
         }
 
         public IoReading GetReading()
         {
-            var sample = Board.Sample(kind, Bit);
+            var sample = Current();
             return Unusable(sample) is { } reason ? new(null, reason) : new(ToValue(sample.Level), null);
         }
 
@@ -138,6 +179,9 @@ public abstract class IoBoard
 
         protected bool ToValue(bool level) => level == ActiveHigh;
 
+        /// <summary>本信號當前的數據。消抖輸入返回過濾後的值。</summary>
+        protected virtual IoSample Current() => Board.Sample(kind, Bit);
+
         /// <summary>數據不能用的原因：不可信或還沒有數據；能用時返回 null。</summary>
         protected string? Unusable(IoSample sample) =>
             sample.Fault ?? (sample.HasData ? null : $"{Board.Name} 尚無 IO 數據");
@@ -152,7 +196,7 @@ public abstract class IoBoard
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var sample = Board.Sample(kind, Bit);
+                var sample = Current();
                 if (sample.Fault is { } fault)
                 {
                     throw new IoFaultException(Name, fault);
@@ -222,5 +266,66 @@ public abstract class IoBoard
                     "輸出口可能損壞或被其他程序改寫");
             }
         }
+    }
+
+    /// <summary>
+    /// 帶消抖的輸入：每輪由 <see cref="UpdateFilters"/> 更新一次，讀取只看過濾結果。
+    /// 過濾不能在 Read() 裡按需算：兩次調用之間的取樣看不到，保持時間不準，也會漏掉中間的抖動。
+    /// </summary>
+    private sealed class FilteredInput(IoBoard board, IoPointConfig config, bool activeHigh)
+        : DigitalInput(board, config.Name, IoKind.Input, config.Bit, activeHigh)
+    {
+        private FilterState? _state;
+
+        /// <summary>在 <see cref="UpdateFilters"/> 的鎖內調用。</summary>
+        public void Update()
+        {
+            var raw = Board.Sample(IoKind.Input, Bit);
+            if (raw.Fault != null || !raw.HasData)
+            {
+                // 故障期間發生了什麼不可知：恢復後從無效重新開始
+                Volatile.Write(ref _state, null);
+                return;
+            }
+
+            var value = ToValue(raw.Level);
+            var now = Board.Time.GetTimestamp();
+            // 啟動時沒有歷史，不能假設信號已經穩定：從無效開始
+            var previous = Volatile.Read(ref _state) ?? new FilterState(false, null, 0, 0);
+            FilterState next;
+            if (value == previous.Stable)
+            {
+                next = new FilterState(value, null, 0, raw.Cycle);
+            }
+            else
+            {
+                var since = previous.Candidate == value ? previous.CandidateSince : now;
+                var delay = value ? config.ActivateDelay : config.DeactivateDelay;
+                next = Board.Time.GetElapsedTime(since, now) >= delay
+                    ? new FilterState(value, null, 0, raw.Cycle)
+                    : new FilterState(previous.Stable, value, since, raw.Cycle);
+            }
+
+            Volatile.Write(ref _state, next);
+        }
+
+        protected override IoSample Current()
+        {
+            var raw = Board.Sample(IoKind.Input, Bit);
+            if (raw.Fault != null)
+            {
+                // 故障不經過延時，立即報出
+                return raw;
+            }
+
+            return Volatile.Read(ref _state) is { } state
+                ? new IoSample(state.Cycle, state.Stable == ActiveHigh)
+                : IoSample.NoData;
+        }
+
+        /// <param name="Stable">過濾後的邏輯值。</param>
+        /// <param name="Candidate">與穩定值不同、正在計時的新值。</param>
+        /// <param name="Cycle">最近一次評估所用數據的週期號，等待的圍欄按它判斷。</param>
+        private sealed record FilterState(bool Stable, bool? Candidate, long CandidateSince, long Cycle);
     }
 }

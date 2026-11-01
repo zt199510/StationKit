@@ -9,8 +9,21 @@ public enum IoKind
 /// <summary>
 /// 一個 IO 點的配置。<see cref="ActiveHigh"/>：true 高電平有效，false 低電平有效，null 未指定（拒絕創建）。
 /// 業務代碼只看邏輯值，取反只在這裡做一次：換一台接線不同的機台，只改配置。
+/// <para>
+/// 消抖（只用於輸入）：<see cref="ActivateDelay"/> / <see cref="DeactivateDelay"/> 分別是變成有效、變成無效前
+/// 必須連續保持的時間，默認 0 立即生效。安全信號只能讓「變安全」的方向延時：
+/// 安全門關閉用 <see cref="ActivateDelay"/>（關穩了才算關），<see cref="DeactivateDelay"/> 保持 0（打開立即生效）。
+/// 啟動時從無效開始過濾；精度一個輪詢週期。見 docs/design/digital-io.md 第 11 節。
+/// </para>
 /// </summary>
-public sealed record IoPointConfig(string Name, ushort Bit, bool? ActiveHigh);
+public sealed record IoPointConfig(string Name, ushort Bit, bool? ActiveHigh)
+{
+    public TimeSpan ActivateDelay { get; init; }
+
+    public TimeSpan DeactivateDelay { get; init; }
+
+    public bool HasDebounce => ActivateDelay > TimeSpan.Zero || DeactivateDelay > TimeSpan.Zero;
+}
 
 /// <summary>
 /// 一個 IO 點在某一輪讀取中的電平。<see cref="Cycle"/> 是讀取<b>開始時</b>的週期號，用來排除下發前讀的數據；

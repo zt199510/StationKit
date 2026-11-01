@@ -76,6 +76,7 @@ public sealed class SimIoBoard : IoBoard, IDisposable
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(reason);
         _fault = reason;
+        UpdateFilters();
         WakeWaiters();
     }
 
@@ -117,6 +118,7 @@ public sealed class SimIoBoard : IoBoard, IDisposable
             Volatile.Write(ref _snapshot, new Snapshot(_snapshot.Cycle + 1, [.. _inputs], [.. _outputs]));
         }
 
+        UpdateFilters();
         WakeWaiters();
     }
 
