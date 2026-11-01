@@ -57,8 +57,7 @@ public sealed class SmcController
             throw new InvalidOperationException($"SMC 控制器{ConnectNo} 的 IO 已經創建過");
         }
 
-        IoBoard = new LeadshineIoBoard(_rawApi, Poller, "SMC", name ?? $"SMC控制器{ConnectNo} IO", inputPorts,
-            outputPorts, _log);
+        IoBoard = new LeadshineIoBoard(_rawApi, Poller, inputPorts, outputPorts, name, _log);
         foreach (var (bit, owner) in _reservedOutputs)
         {
             IoBoard.ReserveOutput(bit, owner);

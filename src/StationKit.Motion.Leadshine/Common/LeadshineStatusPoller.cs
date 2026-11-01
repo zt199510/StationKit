@@ -69,6 +69,9 @@ public sealed class LeadshineStatusPoller : IDisposable
 
     public ushort CardNo { get; }
 
+    /// <summary>系列名，DMC 或 SMC。</summary>
+    internal string Family => _family;
+
     /// <summary>
     /// 快照超過這個時間沒有更新，狀態報 Alarm，等待中的運動報故障。
     /// 用來發現輪詢線程停了或卡住（讀取失敗另有卡故障處理，見 <see cref="Fault"/>）。
@@ -127,6 +130,7 @@ public sealed class LeadshineStatusPoller : IDisposable
                 if (!RefreshAxis(axis, cycle))
                 {
                     // 故障時不更新完成號，只喚醒等待方，讓它們看到故障後立即退出
+                    NotifyAfterRefresh();
                     WakeWaiters();
                     return;
                 }
@@ -134,12 +138,14 @@ public sealed class LeadshineStatusPoller : IDisposable
 
             if (!RefreshIo(cycle))
             {
+                NotifyAfterRefresh();
                 WakeWaiters();
                 return;
             }
 
             // 先更新完成號，再喚醒等待方：等待方被喚醒後一定能看到新的完成號
             Interlocked.Exchange(ref _completedCycle, cycle);
+            NotifyAfterRefresh();
             WakeWaiters();
         }
     }
@@ -158,6 +164,8 @@ public sealed class LeadshineStatusPoller : IDisposable
             }
 
             _fault = null;
+            // 故障前的 IO 數據不能在復位後當成有效數據：下一輪讀完之前按「尚無數據」處理
+            Volatile.Write(ref _ioSnapshot, null);
         }
 
         Log("Stage=Poll, 卡故障已手動復位，恢復輪詢；本卡所有軸需重新使能並回零");
@@ -210,6 +218,12 @@ public sealed class LeadshineStatusPoller : IDisposable
             _ioSnapshot = null;
         }
     }
+
+    /// <summary>
+    /// 每輪結束後（包括進入卡故障的那一輪）、喚醒等待方之前調用，在輪詢線程上執行。
+    /// <see cref="LeadshineIoBoard"/> 用它更新消抖過濾。
+    /// </summary>
+    internal Action? AfterRefresh { get; set; }
 
     /// <summary>最新的 IO 快照；未配置 IO 或還沒讀過時返回 null。</summary>
     public LeadshineIoSnapshot? GetIoSnapshot() => Volatile.Read(ref _ioSnapshot);
@@ -476,6 +490,19 @@ public sealed class LeadshineStatusPoller : IDisposable
         foreach (var axis in Volatile.Read(ref _axes))
         {
             axis.OnCardFault?.Invoke();
+        }
+    }
+
+    private void NotifyAfterRefresh()
+    {
+        try
+        {
+            AfterRefresh?.Invoke();
+        }
+        catch (Exception ex)
+        {
+            // 回調出錯不能打斷輪詢；過濾停在上一輪的值，持續失敗會在日誌裡反覆出現
+            Log($"Stage=Poll, 輪詢回調異常：{ex.GetType().Name}: {ex.Message}", "[報警] ");
         }
     }
 

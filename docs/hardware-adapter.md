@@ -114,7 +114,11 @@ controller.Poller.StatsInterval = TimeSpan.FromSeconds(10);   // 週期統計日
 
 ```csharp
 var io = controller.CreateIoBoard(inputPorts: 1, outputPorts: 1);     // 只配置用到的端口數，每卡一次
-var door = io.CreateInput(new IoPointConfig("安全門關閉", Bit: 3, ActiveHigh: false));
+// 消抖：關穩 50 ms 才算關閉，打開立即生效（安全信號只讓「變安全」的方向延時）
+var door = io.CreateInput(new IoPointConfig("安全門關閉", Bit: 3, ActiveHigh: false)
+{
+    ActivateDelay = TimeSpan.FromMilliseconds(50),
+});
 var clamp = io.CreateOutput(new IoPointConfig("夾爪閥", Bit: 5, ActiveHigh: true));
 
 await clamp.SetAsync(true);                       // 下發後等到回讀一致才返回
@@ -127,6 +131,7 @@ var guardedX = new GuardedAxis(x, safety, [Interlock.RequireInput("安全門", d
 | 讀取 | 只讀 IO 快照，不調 DLL；卡故障、過期、輪詢未啟動時拋 `IoFaultException`，不返回 false |
 | 寫入 | 持卡鎖調 `write_outbit`，返回碼錯誤拋異常並記 `[報警]`；之後等到下發之後讀到的輸出端口與寫入一致才完成 |
 | 讀取失敗 | `read_inport` 沒有錯誤碼，同一次持鎖內讀軸 0 指令位置作探針；拋異常或探針失敗與軸一樣整卡故障 |
+| 消抖 | 每輪發佈 IO 快照後在輪詢線程上更新過濾，精度一個輪詢週期；卡故障時立即報出，復位後從無效重新開始。短於一個週期的毛刺看不到，要靠卡上的硬件濾波 |
 | 輸出位登記 | 同一位只能有一個所有者；SMC 軸用作報警復位的輸出位自動登記，不能再配置成其他輸出 |
 | 卡故障時的輸出 | 輸出口保持最後的狀態，軟件寫不進去。危險執行機構必須在安全回路裡有硬件斷開 |
 
@@ -206,6 +211,7 @@ SMC：
 通用 IO：
 
 - [ ] 每個輸入的有效電平：手動觸發，看邏輯值是否正確
+- [ ] 不穩的感應器：看界面上信號是否閃爍，按實測抖動時間配置 `ActivateDelay` / `DeactivateDelay`；觸點彈跳查卡上是否有輸入濾波參數
 - [ ] 斷開網線：`read_inport` 返回什麼，通訊探針是否報出整卡故障
 - [ ] 輸出寫入後幾個週期能回讀到；`IoBoard.OutputVerifyTimeout`（默認 100 ms）是否足夠
 - [ ] 卡故障、程序退出時閥的實際狀態，安全回路能否切斷危險動作

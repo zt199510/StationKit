@@ -52,8 +52,7 @@ public sealed class DmcController
             throw new InvalidOperationException($"DMC 卡{CardNo} 的 IO 已經創建過");
         }
 
-        IoBoard = new LeadshineIoBoard(_rawApi, Poller, "DMC", name ?? $"DMC卡{CardNo} IO", inputPorts,
-            outputPorts, _log);
+        IoBoard = new LeadshineIoBoard(_rawApi, Poller, inputPorts, outputPorts, name, _log);
         return IoBoard;
     }
 

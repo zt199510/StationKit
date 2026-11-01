@@ -8,7 +8,8 @@ namespace StationKit.Motion.Leadshine;
 /// <item>卡故障、快照過期、尚無數據時，讀取拋異常、寫入在調用 DLL 之前被拒絕，與本卡的軸規則一致。</item>
 /// <item>卡故障或程序退出時，輸出口保持最後的狀態，軟件寫不進去：危險執行機構必須有硬件斷開（docs/design/digital-io.md 4.3）。</item>
 /// </list>
-/// 由 <c>DmcController.CreateIoBoard</c> / <c>SmcController.CreateIoBoard</c> 創建，與本卡的軸共用輪詢器和卡鎖。
+/// 通常由 <c>DmcController.CreateIoBoard</c> / <c>SmcController.CreateIoBoard</c> 創建；直接構造時傳入本卡的輪詢器，
+/// 與本卡的軸共用輪詢器和卡鎖，每個輪詢器只能有一個 IO 板。
 /// </summary>
 public sealed class LeadshineIoBoard : IoBoard
 {
@@ -19,22 +20,35 @@ public sealed class LeadshineIoBoard : IoBoard
     private readonly Action<string>? _log;
     private readonly string _family;
 
-    internal LeadshineIoBoard(ILeadshineMotionApi api, LeadshineStatusPoller poller, string family, string name,
-        ushort inputPorts, ushort outputPorts, Action<string>? log)
-        : base(name, poller.Time)
+    /// <param name="api">原始 SDK，寫輸出時用輪詢器的卡鎖加鎖調用。</param>
+    /// <param name="inputPorts">每輪讀取的輸入端口數（每個 32 位）。</param>
+    /// <param name="outputPorts">每輪讀取的輸出端口數，用於回讀核對。</param>
+    public LeadshineIoBoard(ILeadshineMotionApi api, LeadshineStatusPoller poller, ushort inputPorts,
+        ushort outputPorts, string? name = null, Action<string>? log = null)
+        : base(name ?? $"{poller?.Family}卡{poller?.CardNo} IO", poller?.Time)
     {
+        ArgumentNullException.ThrowIfNull(api);
+        ArgumentNullException.ThrowIfNull(poller);
         if (inputPorts == 0 && outputPorts == 0)
         {
-            throw new ArgumentException($"{name} 的輸入和輸出端口數不能都為 0");
+            throw new ArgumentException($"{Name} 的輸入和輸出端口數不能都為 0");
+        }
+
+        if (poller.AfterRefresh != null)
+        {
+            // 第二個 IO 板會覆蓋端口配置和過濾回調，前一個就悄悄失效了
+            throw new InvalidOperationException($"{poller.Family}卡{poller.CardNo} 已經有 IO 板，每張卡只能創建一個");
         }
 
         _api = api;
         _poller = poller;
-        _family = family;
+        _family = poller.Family;
         _inputPorts = inputPorts;
         _outputPorts = outputPorts;
         _log = log;
         poller.ConfigureIo(inputPorts, outputPorts);
+        // 每輪發佈 IO 快照後更新消抖過濾；進入卡故障的那一輪也會調用，讓過濾從頭開始
+        poller.AfterRefresh = UpdateFilters;
     }
 
     protected override long CurrentCycle => _poller.CurrentCycle;
