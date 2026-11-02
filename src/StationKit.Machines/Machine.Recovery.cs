@@ -72,7 +72,7 @@ public sealed partial class Machine
         var reasons = new List<string>();
         if (_activeWork.Exists(t => !t.IsCompleted))
         {
-            reasons.Add("工站還沒有結束：" + string.Join("、", _config.Stations.Where(s => !IsSettled(s)).Select(s => s.Name)));
+            reasons.Add("還沒有結束：" + DescribeUnfinishedWork());
         }
 
         reasons.AddRange(_config.Axes.Select(a => a.Axis)

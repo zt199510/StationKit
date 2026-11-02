@@ -142,7 +142,7 @@ public sealed class MachineRecoveryTests : IDisposable
 
         var rejected = await Assert.ThrowsAsync<MachineRejectedException>(() => machine.ResetAsync());
 
-        Assert.Contains("工站還沒有結束：A", Assert.Single(rejected.Reasons));
+        Assert.Contains("還沒有結束：工站 A", Assert.Single(rejected.Reasons));
         Assert.True(_f.Gate.IsClosed);
 
         finish.SetResult();
@@ -150,6 +150,41 @@ public sealed class MachineRecoveryTests : IDisposable
         await machine.ResetAsync();
 
         Assert.False(_f.Gate.IsClosed);
+        Assert.Equal(MachineState.Uninitialized, machine.State);
+    }
+
+    [Fact]
+    public async Task 初始化步驟不響應取消_超時報警和復位都寫明在等它()
+    {
+        var finish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var machine = _f.Create(_f.Config() with
+        {
+            StartupSteps =
+            [
+                new("不響應取消", _ =>
+                {
+                    entered.TrySetResult();
+                    return finish.Task;
+                }),
+            ],
+        });
+        var init = machine.InitializeAsync();
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var abort = machine.AbortAsync(StopMode.Decelerate);
+        await _f.AdvanceUntilDoneAsync(abort);
+        await abort;
+
+        var alarm = Assert.Single(_f.Alarms.Active, a => a.Definition.Code == MachineAlarms.StopTimeout);
+        Assert.Contains("初始化步驟", alarm.Detail);
+        _f.Alarms.ClearSource("整機");
+        var rejected = await Assert.ThrowsAsync<MachineRejectedException>(() => machine.ResetAsync());
+        Assert.Contains("初始化步驟", Assert.Single(rejected.Reasons));
+
+        finish.SetResult();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => init);
+        await machine.ResetAsync();
         Assert.Equal(MachineState.Uninitialized, machine.State);
     }
 

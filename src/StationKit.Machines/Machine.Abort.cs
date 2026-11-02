@@ -162,9 +162,8 @@ public sealed partial class Machine
         }
         catch (TimeoutException)
         {
-            var unfinished = string.Join("、", _config.Stations.Where(s => !IsSettled(s)).Select(s => s.Name));
             _alarms.Raise(MachineAlarms.StopTimeout, Name,
-                $"工站沒有在 {_config.StopTimeout.TotalSeconds:0.#} 秒內結束：{unfinished}");
+                $"沒有在 {_config.StopTimeout.TotalSeconds:0.#} 秒內結束：{DescribeUnfinishedWork()}");
             return false;
         }
         catch (Exception)
@@ -172,6 +171,21 @@ public sealed partial class Machine
             // 初始化的失敗由 InitializeAsync 報告，這裡只等它結束；WhenAll 要等全部結束才會完成
             return true;
         }
+    }
+
+    /// <summary>還沒結束的工作。初始化步驟不屬於任何工站，不單獨列出的話現場看不出在等什麼。</summary>
+    private string DescribeUnfinishedWork()
+    {
+        var names = _config.Stations.Where(s => !IsSettled(s)).Select(s => $"工站 {s.Name}").ToList();
+        lock (_sync)
+        {
+            if (_initCts != null)
+            {
+                names.Add("初始化步驟");
+            }
+        }
+
+        return string.Join("、", names);
     }
 
     private void CloseMotionGate() => _config.MotionGate.Close($"整機異常停止中：{FirstFault?.Description}");

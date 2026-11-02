@@ -137,7 +137,10 @@ public sealed class MachineConfigException(IReadOnlyList<string> errors)
     public IReadOnlyList<string> Errors { get; } = errors;
 }
 
-/// <summary>操作條件不滿足，狀態沒有改變。<see cref="Reasons"/> 列出全部原因，現場一次看到要處理的地方。</summary>
+/// <summary>
+/// 操作被拒絕，或進行中被異常停止打斷。<see cref="Reasons"/> 列出全部原因，現場一次看到要處理的地方。
+/// 被拒絕時狀態沒有改變；被打斷時整機已進入 Faulted。
+/// </summary>
 public sealed class MachineRejectedException(string operation, IReadOnlyList<string> reasons)
     : InvalidOperationException($"不能{operation}：" + string.Join("；", reasons))
 {
