@@ -62,6 +62,30 @@ public sealed record MotionProfile(double Velocity, double Acceleration, double 
         }
     }
 
+    /// <summary>
+    /// 走完指定距離的預計規劃時間（秒）：梯形或三角形速度規劃，不含 S 段和通信延遲。
+    /// 距離不足以加到目標速度時退化為三角形，這時只用距離除以速度會少算很多。
+    /// </summary>
+    public double EstimateMoveSeconds(double distance)
+    {
+        Validate();
+        if (!double.IsFinite(distance) || distance < 0)
+        {
+            throw new ArgumentException($"距離必須是非負的有限數：{distance}", nameof(distance));
+        }
+
+        double v = Velocity, a = Acceleration, d = Deceleration;
+        var rampDistance = v * v / (2 * a) + v * v / (2 * d);
+        if (rampDistance <= distance)
+        {
+            return distance / v + v / (2 * a) + v / (2 * d);
+        }
+
+        // 三角形：峰值速度由 vp²/2a + vp²/2d = distance 解出
+        var peak = Math.Sqrt(2 * distance * a * d / (a + d));
+        return peak / a + peak / d;
+    }
+
     private static bool IsPositiveFinite(double value) => double.IsFinite(value) && value > 0;
 }
 
