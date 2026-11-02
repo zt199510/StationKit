@@ -65,6 +65,8 @@ public sealed partial class Machine
         {
             station.StateChanged += OnStationStateChanged;
         }
+
+        alarms.Raised += OnAlarmRaised;
     }
 
     public string Name => _config.Name;
@@ -100,6 +102,8 @@ public sealed partial class Machine
     /// </summary>
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
+        CancellationTokenSource cts;
+        Task work;
         lock (_sync)
         {
             if (_state != MachineState.Uninitialized)
@@ -114,26 +118,63 @@ public sealed partial class Machine
             }
 
             _state = MachineState.Initializing;
+            cts = _initCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            work = RunInitializationAsync(cts.Token);
+            _activeWork = [work];
         }
 
         NotifyState(MachineState.Initializing);
         try
         {
-            await RunInitializationAsync(cancellationToken).ConfigureAwait(false);
+            await work.ConfigureAwait(false);
         }
         catch (MachineInitializationException ex)
         {
+            // 先觸發再報警：首出原因要帶步驟名，不能被報警回調搶先寫成報警代碼
+            var abort = TriggerAbort(Name, ex.Message, StopMode.Decelerate, toSafePoint: false);
             _alarms.Raise(MachineAlarms.InitializationFailed, Name, ex.Message);
-            await FailAsync(ex.Message).ConfigureAwait(false);
+            await abort.ConfigureAwait(false);
             throw;
         }
         catch (OperationCanceledException)
         {
-            await FailAsync("初始化被取消").ConfigureAwait(false);
+            await TriggerAbort(Name, "初始化被取消", StopMode.Decelerate, toSafePoint: false).ConfigureAwait(false);
             throw;
         }
+        finally
+        {
+            lock (_sync)
+            {
+                _initCts = null;
+                _activeWork = [];
+            }
 
-        Transition(MachineState.Ready);
+            cts.Dispose();
+        }
+
+        Task? aborted = null;
+        var ready = false;
+        lock (_sync)
+        {
+            if (_state == MachineState.Initializing)
+            {
+                _state = MachineState.Ready;
+                ready = true;
+            }
+            else
+            {
+                aborted = _abortTask;
+            }
+        }
+
+        if (ready)
+        {
+            NotifyState(MachineState.Ready);
+            return;
+        }
+
+        await aborted!.ConfigureAwait(false);
+        throw new MachineRejectedException("完成初始化", [$"被異常停止打斷：{FirstFault?.Description}"]);
     }
 
     private List<string> InitializeBlockers()
@@ -198,21 +239,6 @@ public sealed partial class Machine
             AxisState.Disabled => $"軸 {axis.Name} 未使能",
             _ => status.IsHomed ? null : $"軸 {axis.Name} 未回零",
         };
-    }
-
-    private async Task FailAsync(string description)
-    {
-        lock (_sync)
-        {
-            _firstFault ??= new MachineFault(_time.GetUtcNow(), Name, description);
-            _state = MachineState.Aborting;
-        }
-
-        NotifyState(MachineState.Aborting);
-        var stations = _config.Stations.Select(StopStationAsync).ToList();
-        await Task.WhenAll(_config.Axes.Select(a => StopAxisAsync(a.Axis, StopMode.Decelerate))).ConfigureAwait(false);
-        await Task.WhenAll(stations).ConfigureAwait(false);
-        Transition(MachineState.Faulted);
     }
 
     private static async Task StopStationAsync(Station station)

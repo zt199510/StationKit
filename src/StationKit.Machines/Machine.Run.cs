@@ -1,3 +1,4 @@
+using StationKit.Abstractions.Motion;
 using StationKit.Stations;
 
 namespace StationKit.Machines;
@@ -15,6 +16,7 @@ public sealed partial class Machine
     public Task RunAsync(int? cycleLimit = null)
     {
         Task completion;
+        InvalidOperationException? startFailure = null;
         lock (_sync)
         {
             if (_state != MachineState.Ready)
@@ -31,15 +33,36 @@ public sealed partial class Machine
             _state = MachineState.Running;
             // 在鎖內逐個啟動：否則異常停止可能插在中間，它取消了已啟動的工站，後面的工站卻還會被啟動
             var runs = new List<Task>();
-            foreach (var station in _config.Stations)
+            try
             {
-                runs.Add(station.RunAsync(cycleLimit));
+                foreach (var station in _config.Stations)
+                {
+                    runs.Add(station.RunAsync(cycleLimit));
+                }
+            }
+            catch (InvalidOperationException ex)
+            {
+                // 上面檢查過了，只有檢查之後工站狀態又變了才會到這裡：已啟動的工站不能繼續跑
+                startFailure = ex;
             }
 
+            _activeWork = runs;
             completion = _runCompletion = WatchRunAsync(runs);
         }
 
         NotifyState(MachineState.Running);
+        if (startFailure != null)
+        {
+            _ = TriggerAbort(Name, $"啟動工站失敗：{startFailure.Message}", StopMode.Decelerate, toSafePoint: false);
+            return completion;
+        }
+
+        // 補上「檢查條件」和「進入狀態」之間新出現的報警：那條報警的回調看到的還是 Ready 之前的判斷
+        if (_alarms.HasBlockingAlarm())
+        {
+            _ = TriggerAbort(Name, "啟動時出現新的故障報警", StopMode.Decelerate, toSafePoint: false);
+        }
+
         return completion;
     }
 
@@ -74,6 +97,7 @@ public sealed partial class Machine
         }
 
         await WaitUntilAsync(() => State != MachineState.Pausing, null, cancellationToken).ConfigureAwait(false);
+        await ThrowIfAbortedAsync("暫停").ConfigureAwait(false);
     }
 
     /// <summary>從暫停恢復運行。條件不滿足時拋 <see cref="MachineRejectedException"/>，保持暫停。</summary>
@@ -132,14 +156,33 @@ public sealed partial class Machine
         {
             var unfinished = string.Join("、", _config.Stations.Where(s => !IsAtSafePoint(s)).Select(s => s.Name));
             var message = $"循環停止超時（{_config.CycleStopTimeout.TotalSeconds:0.#} 秒）：{unfinished} 沒有到達安全點";
+            var abort = TriggerAbort(Name, message, StopMode.Decelerate, toSafePoint: false);
             _alarms.Raise(MachineAlarms.StopTimeout, Name, message);
-            await FailAsync(message).ConfigureAwait(false);
+            await abort.ConfigureAwait(false);
             throw new TimeoutException(message);
         }
 
         // 都在安全點，取消不會打斷工藝，只是結束循環
         await Task.WhenAll(_config.Stations.Select(StopStationAsync)).ConfigureAwait(false);
         await _runCompletion.ConfigureAwait(false);
+        await ThrowIfAbortedAsync("循環停止").ConfigureAwait(false);
+    }
+
+    private async Task ThrowIfAbortedAsync(string operation)
+    {
+        Task abort;
+        lock (_sync)
+        {
+            if (_state is not (MachineState.Aborting or MachineState.Faulted))
+            {
+                return;
+            }
+
+            abort = _abortTask;
+        }
+
+        await abort.ConfigureAwait(false);
+        throw new MachineRejectedException(operation, [$"被異常停止打斷：{FirstFault?.Description}"]);
     }
 
     private List<string> StartBlockers()
@@ -172,8 +215,12 @@ public sealed partial class Machine
     {
         await Task.WhenAll(runs).ConfigureAwait(false);
         var finished = false;
+        Task abort;
         lock (_sync)
         {
+            // 工站都結束了，異常停止可能還在做最後一次停軸：等它結束，調用方才能看到最終狀態。
+            // 異常停止只等工站的運行任務，不等這個方法，不會互相等待
+            abort = _abortTask;
             if (_state is MachineState.Running or MachineState.Pausing or MachineState.Paused
                     or MachineState.CycleStopping &&
                 _config.Stations.All(s => s.State == StationState.Idle))
@@ -189,11 +236,13 @@ public sealed partial class Machine
         }
 
         Pulse();
+        await abort.ConfigureAwait(false);
     }
 
     private void OnStationStateChanged(object? sender, StationState state)
     {
         // 不用事件參數判斷：StateChanged 在鎖外觸發，併發時順序可能和實際轉換相反
+        TriggerIfStationFaulted((Station)sender!);
         UpdatePausedState();
         Pulse();
     }

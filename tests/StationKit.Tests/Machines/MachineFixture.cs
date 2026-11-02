@@ -81,6 +81,14 @@ internal sealed class MachineFixture : IDisposable
         return machine;
     }
 
+    /// <summary>啟動並等到兩個工站都開始第一個循環。</summary>
+    public async Task<Task> StartRunningAsync(Machine machine)
+    {
+        var run = machine.RunAsync();
+        await WaitUntilAsync(() => StationA.CyclesStarted >= 1 && StationB.CyclesStarted >= 1, "兩個工站開始循環");
+        return run;
+    }
+
     public async Task AdvanceUntilDoneAsync(Task task, TimeSpan? max = null) =>
         await new FakeClockStepper(Time, TimeSpan.FromMilliseconds(5))
             .AdvanceUntilDoneAsync(task, max ?? TimeSpan.FromSeconds(10));
@@ -107,6 +115,9 @@ internal sealed class TestStation(string name, AlarmCenter alarms) : Station(nam
 
     /// <summary>循環內要做的事（例如持有資源或運動）。為 null 時等 <see cref="CompleteCycle"/>。</summary>
     public Func<StationContext, Task>? Cycle { get; set; }
+
+    /// <summary>下一個循環拋出這個異常。</summary>
+    public void FailCycle(Exception exception) => _cycleGate.TrySetException(exception);
 
     public int CyclesStarted => Volatile.Read(ref _cyclesStarted);
 
