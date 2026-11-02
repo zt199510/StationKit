@@ -141,16 +141,18 @@ public enum MachineGuardScope { None = 0, Initialize = 1, Run = 2, ManualMotion 
 - 整機沒有 `Error` 級報警（`HasBlockingAlarm()` 不帶來源，涵蓋所有來源）
 - 沒有不確定資源
 
+最先調用配置的 `ResetHardware` 委託（例如雷賽的 `Poller.ResetFault()`，它不在 `IAxis` 上），再檢查上面的條件。
+順序不能反：卡故障時 IO 不可信，條件永遠不通過，硬件復位也就永遠輪不到。委託必須可以重複調用，條件不滿足時操作員會重試。
+
 通過後依次調用 `Station.Reset()`，進入 `Uninitialized`。報警和資源由人確認後單獨清除，整機層**不代勞**：
 自動清除就等於沒有人工確認。
 
 `InitializeAsync` 按以下順序執行：
 
-1. 配置的 `ResetHardware` 委託（例如雷賽的 `Poller.ResetFault()`，它不在 `IAxis` 上）
-2. 對 `Alarm` 狀態的軸調 `ResetAlarmAsync`
-3. `SafetyStartup.RunAsync`
-4. 按順序執行 `MachineStartupStep`（名稱 + 委託）
-5. 再次檢查信號條件和軸健康，通過才進入 `Ready`
+1. 對 `Alarm` 狀態的軸調 `ResetAlarmAsync`
+2. `SafetyStartup.RunAsync`
+3. 按順序執行 `MachineStartupStep`（名稱 + 委託）
+4. 再次檢查信號條件和軸健康，通過才進入 `Ready`
 
 任何一步失敗：停所有軸，報 `MCH-004`（詳情裡寫步驟名），進入 `Faulted`。
 
@@ -246,8 +248,7 @@ public enum StationFaultPolicy
 ### 4.7 消抖會造成啟動時的假違反
 
 信號從「無效」開始過濾（`digital-io.md` 11.3），安全門即使一直關著，也要保持 `ActivateDelay` 才算有效。
-卡故障恢復後同樣從無效開始。所以檢查時機放在初始化結束和啟動前，不能在 `ResetHardware` 之後立刻斷言；
-檢查不通過時拒絕並寫明原因，操作員重試即可，不報故障。
+卡故障恢復後同樣從無效開始。所以 `ResetAsync` 調完 `ResetHardware` 後條件可能暫時不通過：拒絕並寫明原因，操作員重試即可，不報故障。
 
 ### 4.8 一根軸的停止不能影響其他軸
 
@@ -273,7 +274,7 @@ public enum StationFaultPolicy
 
 初始化：
 
-- [ ] 順序：硬件復位 → 報警復位 → 安全初始化 → 步驟按序執行
+- [ ] 順序：報警復位 → 安全初始化 → 步驟按序執行
 - [ ] 某一步失敗：後面的步驟不執行，軸全部停下，`MCH-004` 寫明步驟名，進入 `Faulted`
 - [ ] 初始化中違反 `Initialize` 範圍的條件：中止；不在範圍內的條件：不中止
 - [ ] 配置未指定策略、`Scope`、`StopMode`：拒絕創建
