@@ -18,7 +18,7 @@
 ## 快速體驗
 
 ```bash
-dotnet test                                                # 306 個單元測試
+dotnet test                                                # 330 個單元測試
 dotnet run --project samples/StationKit.Demo               # 雙工位共用相機，正常運行 3 個循環
 dotnet run --project samples/StationKit.Demo -- --fault    # 注入伺服報警，演示故障隔離與人工恢復
 dotnet run --project samples/StationKit.Demo -- --door     # 運行中打開安全門，演示互鎖拒絕運動與人工恢復

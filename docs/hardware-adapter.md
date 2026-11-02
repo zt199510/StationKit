@@ -177,6 +177,7 @@ var config = new MachineConfig
 | 速度參數 | 雷賽用加減速**時間**：`Tacc = v / a`，`Tdec = v / d` |
 | 指令 / 反饋位置 | `AxisStatus.Position` 是指令位置（`get_position_unit`），運動判定和相對運動起點都用它；`FeedbackPosition` 是編碼器位置（`get_encoder_unit`），`Feedback = None` 時為 NaN，不拿指令位置冒充；`FollowingError` = 指令 − 反饋 |
 | 到位判定 | `check_done == 1` 且指令位置在容差內（發現被提前停止）；`InPositionSignal` 啟用時，再等 INP 有效，超過 `InPositionTimeout` 報故障。未啟用 INP 時按 `SettleTime` 固定延時（默認 0），兩者不能同時配置。INP 配置不管啟不啟用都寫入並回讀，防止卡裡固化著舊設置 |
+| 運動超時 | 等 `check_done` 的上限 = 按行程和速度算出的預計規劃時間 + `MoveTimeoutMargin`（默認 3 秒）；超時減速停止並報故障。它只管規劃是否走完，發現不了電機堵轉，那要靠驅動器報警和 INP。設計說明見 [design/motion-timeout.md](design/motion-timeout.md) |
 | 限位判定 | 只盯運動方向上的限位（EL 和卡上軟限位）：停在負限位上往正方向走出來，不會誤報負限位 |
 | 點動 | `vmove` 速度模式；已在點動方向的限位上時拒絕，反方向允許（用於移出限位）；鬆開後 `stop` 減速，等 `check_done == 1` 停穩才返回；沒鬆開卻停了報故障；`JogTimeout` 兜底 |
 | 回零完成 | `get_home_result == 1` 且 `check_done == 1`；原點信號不能代替回零結果 |
@@ -209,6 +210,9 @@ var config = new MachineConfig
 - [ ] DMC 總線軸：回零後 `get_encoder_unit` 是否和指令位置一致（現在不改寫，依賴驅動器）
 - [ ] 沒接 INP 的軸：需要停穩的（拍照、加工）按實測配置 `SettleTime`，不需要的保持 0
 - [ ] `InPositionTimeout`：按驅動器整定後的實際停穩時間設置，太短會誤報，太長會掩蓋增益問題
+- [ ] `MoveTimeoutMargin`：`STime` 調大後，實際運動時間比預計多多少，3 秒是否足夠
+- [ ] 堵轉時 `check_done` 的行為：脈衝軸預期脈衝發完就是 1；DMC 總線軸要實測。沒接 INP 的軸目前發現不了堵轉
+- [ ] `StopConfirmTimeout`：最慢的軸從最高速減速到停，默認 30 秒是否合適
 - [ ] `vmove` 的 `dir`：0 負方向、1 正方向，與電機實際轉向、坐標正方向一致（先低速點一下）
 - [ ] 未回零時卡上軟限位仍然生效，坐標是上電時的隨機值，可能擋住未回零點動：確認現場的處理方式
 - [ ] 回零過程中觸發限位：現在仍按故障處理；用限位作原點的回零方式需要按實機情況調整
