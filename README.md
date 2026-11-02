@@ -12,26 +12,29 @@
 - **安全點動**：已回零時走到軟限位邊界為止，未回零時強制低速；界面看門狗防止鬆開事件丟失後軸一直走
 - **共享資源租約**：多工位共用相機或區域時互斥；持有期間出異常，資源保持佔用，直到人工確認後復位
 - **工站框架**：狀態機、暫停只在安全點生效、故障轉報警、節拍（CT）統計
+- **整機協調**：初始化、運行、暫停、恢復的統一入口；循環停止走到安全點才結束，異常停止先取消工站再停軸，首出原因不被次生報警覆蓋；運行中監視條件和軸狀態，違反後鎖存，人工恢復時列出全部未處理項
 - **報警中心**：報警代碼表帶處理建議，有去重、確認、清除和歷史記錄
 
 ## 快速體驗
 
 ```bash
-dotnet test                                                # 236 個單元測試
+dotnet test                                                # 306 個單元測試
 dotnet run --project samples/StationKit.Demo               # 雙工位共用相機，正常運行 3 個循環
 dotnet run --project samples/StationKit.Demo -- --fault    # 注入伺服報警，演示故障隔離與人工恢復
 dotnet run --project samples/StationKit.Demo -- --door     # 運行中打開安全門，演示互鎖拒絕運動與人工恢復
+dotnet run --project samples/StationKit.Demo -- --estop    # 運行中按下急停，演示運行監視立即停止與人工恢復
 ```
 
 故障演示的關鍵輸出：
 
 ```text
-[ 1.960s] !! 報警 STN-001 [下工位] 工站循環異常：軸 下工位X：報警中：Err 16.0 伺服過載
-[ 4.192s] !! 報警 RES-001 [上工位] 等待共享資源超時：... 資源處於不確定狀態（下工位 持有期間異常 ...），需人工確認後復位
-[ 4.202s] 資源「相機」：佔用者 下工位，不確定：下工位 持有期間異常：...
+[ 2.675s] 整機狀態 → Aborting
+[ 2.678s] !! 報警 MCH-002 [整機/下工位X] 軸狀態異常：軸 下工位X 報警：Err 16.0 伺服過載
+[ 2.690s] 整機狀態 → Faulted
+[ 2.694s] 資源「相機」：佔用者 下工位，不確定：下工位 持有期間異常：A task was canceled.
 ```
 
-下工位在拍照區內報警後，相機和拍照區**不會被自動釋放**：上工位等到超時並報警，而不是開進一個狀態未知的區域。
+下工位在拍照區內報警後，上工位立即停下；相機和拍照區**不會被自動釋放**。人工確認現場、解除佔用、清除報警後才能復位，復位後必須重新初始化。
 
 ## 項目結構
 
@@ -44,7 +47,8 @@ dotnet run --project samples/StationKit.Demo -- --door     # 運行中打開安�
 | `StationKit.Safety` | 配置校驗、安全初始化、安全包裝軸 | Abstractions |
 | `StationKit.Alarms` | 報警代碼表、報警中心 | 無 |
 | `StationKit.Stations` | 工站基類、共享資源仲裁、節拍統計、IO 報警分類 | Alarms、Abstractions |
-| `samples/StationKit.Demo` | 雙工位共用相機、氣缸上料、安全門互鎖的演示 | 以上全部 |
+| `StationKit.Machines` | 整機狀態機、異常停止、運行監視、人工恢復 | Stations、Safety、Alarms、Abstractions |
+| `samples/StationKit.Demo` | 雙工位共用相機、氣缸上料、安全門互鎖、急停的演示 | 以上全部 |
 
 依賴方向是單向的：沒有任何一層依賴 UI，也沒有任何一層依賴具體的運動控制卡。設計說明見 [docs/architecture.md](docs/architecture.md)，接入真實控制卡的方法見 [docs/hardware-adapter.md](docs/hardware-adapter.md)。
 
@@ -58,6 +62,7 @@ dotnet run --project samples/StationKit.Demo -- --door     # 運行中打開安�
 
 ## 路線圖
 
+- [x] 整機協調層（`StationKit.Machines`）
 - [x] 雷賽 DMC 適配器（`IAxis` + `IAxisSafetyPort`），待實機驗證
 - [x] 雷賽 SMC 脈衝軸，與 DMC 共用安全邏輯，待實機驗證
 - [x] 點動（帶看門狗）、寸動

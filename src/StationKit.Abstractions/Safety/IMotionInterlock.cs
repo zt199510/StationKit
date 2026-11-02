@@ -41,7 +41,8 @@ public static class Interlock
     /// 要求輸入信號為 <paramref name="expected"/> 才允許運動，例如「安全門關閉」。
     /// 數據不可信（卡故障、過期）時<b>阻止</b>，不當作滿足。
     /// <paramref name="kinds"/> 為 null 時對所有運動生效。
-    /// 只在下發前檢查一次：運動中信號變化（例如開門）不會停軸，必須由硬件安全回路處理。
+    /// 只在下發前檢查一次：運動中信號變化（例如開門）不會停軸。要讓軟件發現，再配置為整機的運行條件（MachineGuard）；
+    /// 切斷動力必須由硬件安全回路處理。
     /// </summary>
     public static IMotionInterlock RequireInput(string name, IDigitalInput input, bool expected = true,
         IReadOnlyCollection<MotionKind>? kinds = null)

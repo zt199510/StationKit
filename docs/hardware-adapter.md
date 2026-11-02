@@ -135,6 +135,23 @@ var guardedX = new GuardedAxis(x, safety, [Interlock.RequireInput("安全門", d
 | 輸出位登記 | 同一位只能有一個所有者；SMC 軸用作報警復位的輸出位自動登記，不能再配置成其他輸出 |
 | 卡故障時的輸出 | 輸出口保持最後的狀態，軟件寫不進去。危險執行機構必須在安全回路裡有硬件斷開 |
 
+## 接入整機協調
+
+卡故障的復位不在 `IAxis` 上，通過 `ResetHardware` 委託交給 `Machine`，復位時最先調用（可以重複調用，沒有故障時 `ResetFault` 直接返回）。
+卡故障和快照過期會讓 `GetStatus()` 返回 `Alarm`，就緒和運行時由運行監視報 `MCH-002`，不用等到下一次運動。
+
+```csharp
+var config = new MachineConfig
+{
+    // ...
+    ResetHardware = _ =>
+    {
+        controller.Poller.ResetFault();
+        return Task.CompletedTask;
+    },
+};
+```
+
 ## 結構
 
 | 文件 | 職責 |
@@ -216,6 +233,14 @@ SMC：
 - [ ] 輸出寫入後幾個週期能回讀到；`IoBoard.OutputVerifyTimeout`（默認 100 ms）是否足夠
 - [ ] 卡故障、程序退出時閥的實際狀態，安全回路能否切斷危險動作
 - [ ] 加入 IO 後的週期統計：`AvgMs` 增加多少，`Overruns` 仍為 0
+
+整機協調：
+
+- [ ] 運行中開門、按急停：硬件回路和軟件的先後順序，界面看到的首出原因是否正確
+- [ ] 斷網：`MCH-002` 從斷開到報出的實際時間（`staleTimeout` + `MonitorPeriod`）
+- [ ] `StopTimeout`：最慢的軸從最高速減速到停，留足餘量
+- [ ] 重新初始化時，已使能的軸再調 `EnableAsync` 是否安全，兩個系列分別確認
+- [ ] 異常停止後垂直軸的實際狀態（抱閘、是否掉落）：整機層不主動失能
 
 ## 暫不支持
 
