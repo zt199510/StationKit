@@ -196,7 +196,7 @@ public sealed partial class Machine
 
     private List<string> ResumeBlockers()
     {
-        var reasons = new List<string>();
+        var reasons = GuardBlockers(MachineGuardScope.Run);
         if (_alarms.HasBlockingAlarm())
         {
             reasons.Add("存在未清除的故障報警");

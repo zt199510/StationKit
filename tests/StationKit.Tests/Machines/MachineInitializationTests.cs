@@ -32,7 +32,7 @@ public sealed class MachineInitializationTests : IDisposable
                 }),
             ],
         };
-        var machine = new Machine(config, _f.Alarms, _f.Time);
+        var machine = _f.Create(config);
         Assert.Equal(MachineState.Uninitialized, machine.State);
 
         var init = machine.InitializeAsync();
@@ -47,7 +47,7 @@ public sealed class MachineInitializationTests : IDisposable
     public async Task 軸處於報警_先復位再安全初始化()
     {
         _f.AxisX.InjectAlarm("Err 16.0");
-        var machine = new Machine(_f.Config(), _f.Alarms, _f.Time);
+        var machine = _f.Create(_f.Config());
 
         var init = machine.InitializeAsync();
         await _f.AdvanceUntilDoneAsync(init);
@@ -73,7 +73,7 @@ public sealed class MachineInitializationTests : IDisposable
                 }),
             ],
         };
-        var machine = new Machine(config, _f.Alarms, _f.Time);
+        var machine = _f.Create(config);
 
         var failure = await Assert.ThrowsAsync<MachineInitializationException>(() => machine.InitializeAsync());
 
@@ -106,7 +106,7 @@ public sealed class MachineInitializationTests : IDisposable
                 }),
             ],
         };
-        var machine = new Machine(config, _f.Alarms, _f.Time);
+        var machine = _f.Create(config);
 
         var init = machine.InitializeAsync();
         await _f.AdvanceUntilDoneAsync(init);
@@ -120,7 +120,7 @@ public sealed class MachineInitializationTests : IDisposable
     public async Task 啟動步驟沒有覆蓋某根軸_初始化失敗而不是運行中才報未回零()
     {
         var config = _f.Config() with { StartupSteps = [new("X 回零", ct => _f.AxisX.HomeAsync(ct))] };
-        var machine = new Machine(config, _f.Alarms, _f.Time);
+        var machine = _f.Create(config);
 
         var failure = await Assert.ThrowsAsync<MachineInitializationException>(() => machine.InitializeAsync());
 
@@ -143,7 +143,7 @@ public sealed class MachineInitializationTests : IDisposable
                 }),
             ],
         };
-        var machine = new Machine(config, _f.Alarms, _f.Time);
+        var machine = _f.Create(config);
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => machine.InitializeAsync(cts.Token));
 
@@ -156,7 +156,7 @@ public sealed class MachineInitializationTests : IDisposable
     public async Task 有未清除的故障報警_拒絕且狀態不變()
     {
         _f.Alarms.Raise(MachineAlarms.MonitorFault, "其他");
-        var machine = new Machine(_f.Config(), _f.Alarms, _f.Time);
+        var machine = _f.Create(_f.Config());
 
         var rejected = await Assert.ThrowsAsync<MachineRejectedException>(() => machine.InitializeAsync());
 
@@ -168,7 +168,7 @@ public sealed class MachineInitializationTests : IDisposable
     [Fact]
     public async Task 非未初始化狀態_拒絕再次初始化()
     {
-        var machine = new Machine(_f.Config(), _f.Alarms, _f.Time);
+        var machine = _f.Create(_f.Config());
         var init = machine.InitializeAsync();
         await _f.AdvanceUntilDoneAsync(init);
         await init;

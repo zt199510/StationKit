@@ -12,7 +12,7 @@ public sealed class MachineRunTests : IDisposable
     [Fact]
     public void 未初始化時不能啟動()
     {
-        var machine = new Machine(_f.Config(), _f.Alarms, _f.Time);
+        var machine = _f.Create(_f.Config());
 
         Assert.Throws<MachineRejectedException>(() => { _ = machine.RunAsync(); });
 

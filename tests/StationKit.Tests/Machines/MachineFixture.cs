@@ -24,6 +24,8 @@ internal sealed class MachineFixture : IDisposable
         ConfirmedOnMachine = true,
     };
 
+    private readonly List<Machine> _machines = [];
+
     public MachineFixture()
     {
         AxisX = new SimAxis("X", Time) { HomeDuration = TimeSpan.Zero };
@@ -71,10 +73,18 @@ internal sealed class MachineFixture : IDisposable
         Resources = Resources,
     };
 
+    /// <summary>創建機器，測試結束時釋放。</summary>
+    public Machine Create(MachineConfig config)
+    {
+        var machine = new Machine(config, Alarms, Time);
+        _machines.Add(machine);
+        return machine;
+    }
+
     /// <summary>創建並初始化完成，機器處於 Ready。</summary>
     public async Task<Machine> ReadyMachineAsync(MachineConfig? config = null)
     {
-        var machine = new Machine(config ?? Config(), Alarms, Time);
+        var machine = Create(config ?? Config());
         var init = machine.InitializeAsync();
         await AdvanceUntilDoneAsync(init);
         await init;
@@ -93,7 +103,27 @@ internal sealed class MachineFixture : IDisposable
         await new FakeClockStepper(Time, TimeSpan.FromMilliseconds(5))
             .AdvanceUntilDoneAsync(task, max ?? TimeSpan.FromSeconds(10));
 
-    public void Dispose() => Io.Dispose();
+    /// <summary>推進假時鐘，直到條件成立。給監視循環用：它只在時鐘前進時才檢查。</summary>
+    public async Task AdvanceUntilAsync(Func<bool> condition, string description)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (!condition())
+        {
+            Assert.True(DateTime.UtcNow < deadline, $"等待超時：{description}");
+            Time.Advance(TimeSpan.FromMilliseconds(5));
+            await Task.Delay(2);
+        }
+    }
+
+    /// <summary>推進足夠多的監視週期，用來斷言「什麼都沒有發生」。</summary>
+    public Task AdvanceSomeTicksAsync() =>
+        new FakeClockStepper(Time, TimeSpan.FromMilliseconds(5)).AdvanceAsync(TimeSpan.FromMilliseconds(200));
+
+    public void Dispose()
+    {
+        _machines.ForEach(m => m.Dispose());
+        Io.Dispose();
+    }
 
     /// <summary>真實時間內等待條件成立：工站循環在線程池上執行，不受假時鐘控制。</summary>
     public static async Task WaitUntilAsync(Func<bool> condition, string description)

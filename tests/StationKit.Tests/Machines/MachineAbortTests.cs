@@ -169,7 +169,7 @@ public sealed class MachineAbortTests : IDisposable
             Axes = [new AxisSafetyBinding(hung, _f.AxisX, MachineFixture.Safety)],
             StartupSteps = [],
         };
-        var machine = new Machine(config, _f.Alarms, _f.Time);
+        var machine = _f.Create(config);
         var init = machine.InitializeAsync();
         await _f.AdvanceUntilDoneAsync(init);
         await init;
@@ -197,7 +197,7 @@ public sealed class MachineAbortTests : IDisposable
             ],
             StartupSteps = [new("Y 回零", ct => _f.AxisY.HomeAsync(ct))],
         };
-        var machine = new Machine(config, _f.Alarms, _f.Time);
+        var machine = _f.Create(config);
         var init = machine.InitializeAsync();
         await _f.AdvanceUntilDoneAsync(init);
         await init;
@@ -290,7 +290,7 @@ public sealed class MachineAbortTests : IDisposable
     [Fact]
     public async Task 未初始化或已故障時異常停止_只停軸_狀態不變()
     {
-        var machine = new Machine(_f.Config(), _f.Alarms, _f.Time);
+        var machine = _f.Create(_f.Config());
         await _f.AxisX.EnableAsync();
         await _f.AxisX.HomeAsync();
         var moving = _f.AxisX.MoveAbsoluteAsync(200, Slow);
@@ -316,7 +316,7 @@ public sealed class MachineAbortTests : IDisposable
                 }),
             ],
         };
-        var machine = new Machine(config, _f.Alarms, _f.Time);
+        var machine = _f.Create(config);
         var init = machine.InitializeAsync();
         await stepStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 

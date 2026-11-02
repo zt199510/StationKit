@@ -67,6 +67,7 @@ public sealed partial class Machine
         }
 
         alarms.Raised += OnAlarmRaised;
+        _monitorTask = MonitorLoopAsync(_monitorCts.Token);
     }
 
     public string Name => _config.Name;
@@ -185,6 +186,7 @@ public sealed partial class Machine
             reasons.Add("存在未清除的故障報警");
         }
 
+        reasons.AddRange(GuardBlockers(MachineGuardScope.Initialize));
         return reasons;
     }
 
@@ -207,10 +209,11 @@ public sealed partial class Machine
             await RunStepAsync(step.Name, step.Action, token).ConfigureAwait(false);
         }
 
-        await RunStepAsync("檢查軸狀態", _ =>
+        await RunStepAsync("最終檢查", _ =>
         {
             // 步驟沒有覆蓋某根軸時在這裡發現，不要等到運行中才報未回零
-            var problems = _config.Axes.Select(a => DescribeUnhealthy(a.Axis)).OfType<string>().ToList();
+            var problems = _config.Axes.Select(a => DescribeUnhealthy(a.Axis)).OfType<string>()
+                .Concat(GuardBlockers(MachineGuardScope.Initialize)).ToList();
             return problems.Count == 0
                 ? Task.CompletedTask
                 : throw new InvalidOperationException(string.Join("；", problems));
