@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using StationKit.Abstractions.Motion;
 using StationKit.Abstractions.Safety;
 using StationKit.Motion.Leadshine;
@@ -42,10 +43,10 @@ public sealed class DmcAxisTests : IDisposable
         return axis.GetStatus();
     }
 
-    private DmcAxis CreateAxis(ushort axisNo = 0, TimeSpan? motionTimeout = null) =>
-        new(_api, CreateOptions(axisNo, motionTimeout), _poller, log: _log.Add);
+    private DmcAxis CreateAxis(ushort axisNo = 0, TimeSpan? moveTimeoutMargin = null) =>
+        new(_api, CreateOptions(axisNo, moveTimeoutMargin), _poller, log: _log.Add);
 
-    private static DmcAxisOptions CreateOptions(ushort axisNo = 0, TimeSpan? motionTimeout = null) => new()
+    private static DmcAxisOptions CreateOptions(ushort axisNo = 0, TimeSpan? moveTimeoutMargin = null) => new()
     {
         CardNo = 0,
         AxisNo = axisNo,
@@ -55,12 +56,12 @@ public sealed class DmcAxisTests : IDisposable
         Feedback = LeadshineFeedback.None,
         HomeProfile = new DmcHomeProfile(Mode: 17, LowVelocity: 5, HighVelocity: 20, AccelerationTime: 0.1,
             DecelerationTime: 0.1, Offset: 0),
-        MotionTimeout = motionTimeout ?? TimeSpan.FromSeconds(5),
+        MoveTimeoutMargin = moveTimeoutMargin ?? TimeSpan.FromSeconds(5),
     };
 
-    private async Task<DmcAxis> EnabledAxisAsync(TimeSpan? motionTimeout = null)
+    private async Task<DmcAxis> EnabledAxisAsync(TimeSpan? moveTimeoutMargin = null)
     {
-        var axis = CreateAxis(motionTimeout: motionTimeout);
+        var axis = CreateAxis(moveTimeoutMargin: moveTimeoutMargin);
         await axis.EnableAsync();
         return axis;
     }
@@ -151,14 +152,122 @@ public sealed class DmcAxisTests : IDisposable
     }
 
     [Fact]
-    public async Task 運動超時_減速停止並報故障()
+    public async Task 規劃不結束_超過預計時間加餘量後減速停止並報故障()
     {
         _api.PollsPerMove = int.MaxValue;
-        using var axis = await EnabledAxisAsync(motionTimeout: TimeSpan.FromMilliseconds(50));
+        using var axis = await EnabledAxisAsync(moveTimeoutMargin: TimeSpan.FromMilliseconds(50));
+        var expected = TimeSpan.FromSeconds(Profile.EstimateMoveSeconds(1)) + TimeSpan.FromMilliseconds(50);
+        var watch = Stopwatch.StartNew();
 
-        var ex = await Assert.ThrowsAsync<MotionFaultException>(() => axis.MoveAbsoluteAsync(120, Profile));
+        var ex = await Assert.ThrowsAsync<MotionFaultException>(() => axis.MoveAbsoluteAsync(1, Profile));
 
+        Assert.True(watch.Elapsed >= expected, $"{watch.Elapsed} 早於 {expected}");
         Assert.Contains("超時", ex.Message);
+        Assert.Contains("dmc_stop", _api.Calls);
+        Assert.Equal(LeadshineStopMode.Decelerated, _api.LastStopMode);
+    }
+
+    [Fact]
+    public async Task 運動時間比餘量長_還沒到預計時間_不報超時()
+    {
+        // 預計 1.35 秒，餘量只有 20 ms：如果超時不跟行程走，100 ms 時已經報超時了
+        _api.PollsPerMove = int.MaxValue;
+        using var axis = await EnabledAxisAsync(moveTimeoutMargin: TimeSpan.FromMilliseconds(20));
+        using var cancel = new CancellationTokenSource();
+
+        var move = axis.MoveAbsoluteAsync(120, Profile, cancel.Token);
+        await WaitForCallAsync("dmc_pmove_unit");
+        await Task.Delay(100);
+        Assert.False(move.IsCompleted);
+
+        await cancel.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => move);
+    }
+
+    [Fact]
+    public async Task 距離為零_超時等於餘量()
+    {
+        _api.PollsPerMove = int.MaxValue;
+        using var axis = await EnabledAxisAsync(moveTimeoutMargin: TimeSpan.FromMilliseconds(50));
+        var watch = Stopwatch.StartNew();
+
+        var ex = await Assert.ThrowsAsync<MotionFaultException>(() => axis.MoveAbsoluteAsync(0, Profile));
+
+        Assert.True(watch.Elapsed >= TimeSpan.FromMilliseconds(50), $"{watch.Elapsed} 早於餘量");
+        Assert.Contains("超時", ex.Message);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void 運動超時餘量不大於零_構造時拒絕(int milliseconds)
+    {
+        var ex = Assert.Throws<ArgumentException>(() =>
+            CreateAxis(moveTimeoutMargin: TimeSpan.FromMilliseconds(milliseconds)));
+
+        Assert.Contains("運動超時餘量", ex.Message);
+    }
+
+    [Fact]
+    public void 停止確認超時不大於零_構造時拒絕()
+    {
+        var options = CreateOptions() with { StopConfirmTimeout = TimeSpan.Zero };
+
+        var ex = Assert.Throws<ArgumentException>(() => new DmcAxis(_api, options, _poller));
+
+        Assert.Contains("停止確認超時", ex.Message);
+    }
+
+    [Fact]
+    public async Task 運動時間超出TimeSpan範圍_下發前拒絕_軸沒有動()
+    {
+        using var axis = await EnabledAxisAsync();
+
+        await Assert.ThrowsAsync<MotionRejectedException>(() =>
+            axis.MoveAbsoluteAsync(120, new MotionProfile(1e-300, 1000, 1000)));
+
+        Assert.DoesNotContain("dmc_set_profile_unit", _api.Calls);
+        Assert.DoesNotContain("dmc_pmove_unit", _api.Calls);
+    }
+
+    [Fact]
+    public async Task 點動鬆開後的停止確認_用停止確認超時_不受運動餘量影響()
+    {
+        _api.PollsAfterStop = int.MaxValue;
+        var options = CreateOptions() with
+        {
+            MoveTimeoutMargin = TimeSpan.FromHours(1),
+            StopConfirmTimeout = TimeSpan.FromMilliseconds(50),
+        };
+        using var axis = new DmcAxis(_api, options, _poller);
+        await axis.EnableAsync();
+        using var hold = new CancellationTokenSource();
+
+        var jog = axis.JogAsync(JogDirection.Positive, Profile, hold.Token);
+        await WaitForCallAsync("dmc_vmove");
+        await hold.CancelAsync();
+
+        var ex = await Assert.ThrowsAsync<MotionFaultException>(() => jog.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.Contains("沒有停下", ex.Message);
+    }
+
+    [Fact]
+    public async Task 經安全包裝低速點動到軟限位_按住時間比餘量長_不誤報()
+    {
+        // 走到 300 預計 3 秒多，餘量只有 20 ms：點動的超時同樣跟行程走
+        using var axis = await EnabledAxisAsync(moveTimeoutMargin: TimeSpan.FromMilliseconds(20));
+        await axis.HomeAsync();
+        var guarded = new GuardedAxis(axis, Safety);
+        _api.PollsPerMove = int.MaxValue;
+        using var hold = new CancellationTokenSource();
+
+        var jog = guarded.JogAsync(JogDirection.Positive, Profile, hold.Token);
+        await WaitForCallAsync("dmc_pmove_unit");
+        await Task.Delay(100);
+        Assert.False(jog.IsCompleted);
+        await hold.CancelAsync();
+
+        await jog;
         Assert.Contains("dmc_stop", _api.Calls);
     }
 

@@ -175,7 +175,7 @@ public sealed class LeadshineIoBoardTests : IDisposable
         HomeMode = new SmcHomeMode(Direction: 0, VelocityMode: 1, Mode: 2, PositionSource: 0),
         HomeSpeed = new SmcHomeSpeed(LowVelocity: 5, HighVelocity: 20, AccelerationTime: 0.1, DecelerationTime: 0.1),
         HomePinLogic = new SmcHomePinLogic(Logic: 0, Filter: 0),
-        MotionTimeout = TimeSpan.FromSeconds(5),
+        MoveTimeoutMargin = TimeSpan.FromSeconds(5),
     };
 
     private void AddLog(string line)

@@ -67,7 +67,7 @@ public sealed class SmcAxisTests : IDisposable
         HomeMode = new SmcHomeMode(Direction: 0, VelocityMode: 1, Mode: 2, PositionSource: 0),
         HomeSpeed = new SmcHomeSpeed(LowVelocity: 5, HighVelocity: 20, AccelerationTime: 0.1, DecelerationTime: 0.1),
         HomePinLogic = new SmcHomePinLogic(Logic: 0, Filter: 0),
-        MotionTimeout = TimeSpan.FromSeconds(5),
+        MoveTimeoutMargin = TimeSpan.FromSeconds(5),
     };
 
     private SmcAxis CreateAxis(SmcAxisOptions? options = null) =>
@@ -364,6 +364,26 @@ public sealed class SmcAxisTests : IDisposable
 
         Assert.Contains("20 ms 內 INP 未有效", ex.Message);
         Assert.Contains("INP 未接線", ex.Message);
+    }
+
+    [Fact]
+    public async Task 等待INP單獨計時_不受運動超時餘量限制()
+    {
+        // 距離為 0，運動超時只有 20 ms；規劃走完之後 INP 晚 100 ms 才有效，仍然要算到位
+        using var axis = await EnabledAxisAsync(Options() with
+        {
+            InPositionSignal = new(Enabled: true, Logic: 0),
+            MoveTimeoutMargin = TimeSpan.FromMilliseconds(20),
+            InPositionTimeout = TimeSpan.FromSeconds(5),
+        });
+        _api.PollsPerMove = 1;
+
+        var move = axis.MoveAbsoluteAsync(0, Profile);
+        await Task.Delay(100);
+        Assert.False(move.IsCompleted);
+
+        _api.IoStatus = 1u << 8;          // INP
+        await move;
     }
 
     [Fact]

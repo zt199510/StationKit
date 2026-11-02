@@ -78,7 +78,14 @@ public abstract record LeadshineAxisOptions
     /// <summary>指令位置與目標的容差（mm），用於發現運動被提前停止；不是電機實際到位的判定，那個靠 INP。</summary>
     public double InPositionTolerance { get; init; } = 0.01;
 
-    public TimeSpan MotionTimeout { get; init; } = TimeSpan.FromSeconds(30);
+    /// <summary>
+    /// 點位運動超時的餘量：超時 = 按行程和速度算出的預計規劃時間 + 這個值，必須大於 0。
+    /// 這個超時等的是規劃走完（check_done），發現不了電機堵轉，那要靠驅動器報警和 INP。
+    /// </summary>
+    public TimeSpan MoveTimeoutMargin { get; init; } = TimeSpan.FromSeconds(3);
+
+    /// <summary>發出停止後，等軸確認停下的最長時間，必須大於 0。</summary>
+    public TimeSpan StopConfirmTimeout { get; init; } = TimeSpan.FromSeconds(30);
 
     public TimeSpan HomeTimeout { get; init; } = TimeSpan.FromSeconds(60);
 

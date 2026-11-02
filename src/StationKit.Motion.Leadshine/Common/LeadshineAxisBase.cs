@@ -60,6 +60,16 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
             throw new ArgumentException($"{options.Name}：停穩延時不能為負數（{options.SettleTime}）");
         }
 
+        if (options.MoveTimeoutMargin <= TimeSpan.Zero)
+        {
+            throw new ArgumentException($"{options.Name}：運動超時餘量必須大於 0（{options.MoveTimeoutMargin}）");
+        }
+
+        if (options.StopConfirmTimeout <= TimeSpan.Zero)
+        {
+            throw new ArgumentException($"{options.Name}：停止確認超時必須大於 0（{options.StopConfirmTimeout}）");
+        }
+
         if (options.InPositionSignal.Enabled && options.SettleTime > TimeSpan.Zero)
         {
             // 兩個都配，出了問題分不清是哪個起作用；有 INP 就以 INP 為準
@@ -225,6 +235,7 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
         }
 
         LimitWatch limits;
+        TimeSpan timeout;
         long issuedAt;
         await _motionCommandGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -232,6 +243,8 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
             var start = (await EnsureReadyForMotionAsync(cancellationToken).ConfigureAwait(false)).Position;
             // 只盯運動方向上的限位：停在負限位上往正方向走出來，不能誤報負限位
             limits = new LimitWatch(Positive: position > start, Negative: position < start);
+            // 下發前算好：算不出來時軸還沒動，下發後才出錯就沒有人等它了
+            timeout = MoveTimeout(Math.Abs(position - start), profile);
             ApplyProfile(profile, "Move");
 
             // 取消檢查放在下發前最後一步：取消完成後不能再有運動指令下發
@@ -245,7 +258,7 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
             _motionCommandGate.Release();
         }
 
-        var (final, finalSnapshot) = await WaitUntilAsync("Move", _options.MotionTimeout,
+        var (final, finalSnapshot) = await WaitUntilAsync("Move", timeout,
             (status, _) => status.State == AxisState.Idle, limits, issuedAt, cancellationToken).ConfigureAwait(false);
 
         var actual = final.Position;
@@ -713,6 +726,20 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
         };
     }
 
+    /// <summary>點位運動等待規劃走完的上限：預計規劃時間 + 餘量。速度極低時超出 TimeSpan 範圍，拒絕運動。</summary>
+    private TimeSpan MoveTimeout(double distance, MotionProfile profile)
+    {
+        var seconds = profile.EstimateMoveSeconds(distance) + _options.MoveTimeoutMargin.TotalSeconds;
+        try
+        {
+            return TimeSpan.FromSeconds(seconds);
+        }
+        catch (OverflowException)
+        {
+            throw new MotionRejectedException(Name, $"運動時間超出範圍：距離 {distance:R}，速度 {profile.Velocity:R}");
+        }
+    }
+
     /// <summary>下發速度參數。雷賽用加減速時間，不是加速度。在發令鎖內調用。</summary>
     private void ApplyProfile(MotionProfile profile, string stage)
     {
@@ -780,7 +807,7 @@ public abstract class LeadshineAxisBase : IAxis, IAxisSafetyPort, IDisposable
                     $"{stage} 停止確認失敗：check_done={snapshot.Done}");
             }
 
-            if (Time.GetElapsedTime(start) > _options.MotionTimeout)
+            if (Time.GetElapsedTime(start) > _options.StopConfirmTimeout)
             {
                 throw new MotionFaultException(Name, $"{stage} 已發出停止，但軸在超時內沒有停下");
             }
