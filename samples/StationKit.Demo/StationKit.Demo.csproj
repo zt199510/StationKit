@@ -5,6 +5,7 @@
     <ProjectReference Include="..\..\src\StationKit.Safety\StationKit.Safety.csproj" />
     <ProjectReference Include="..\..\src\StationKit.Stations\StationKit.Stations.csproj" />
     <ProjectReference Include="..\..\src\StationKit.Io.Simulation\StationKit.Io.Simulation.csproj" />
+    <ProjectReference Include="..\..\src\StationKit.Machines\StationKit.Machines.csproj" />
   </ItemGroup>
 
   <PropertyGroup>
