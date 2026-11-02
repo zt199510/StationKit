@@ -71,6 +71,16 @@ internal sealed class MachineFixture : IDisposable
         Resources = Resources,
     };
 
+    /// <summary>創建並初始化完成，機器處於 Ready。</summary>
+    public async Task<Machine> ReadyMachineAsync(MachineConfig? config = null)
+    {
+        var machine = new Machine(config ?? Config(), Alarms, Time);
+        var init = machine.InitializeAsync();
+        await AdvanceUntilDoneAsync(init);
+        await init;
+        return machine;
+    }
+
     public async Task AdvanceUntilDoneAsync(Task task, TimeSpan? max = null) =>
         await new FakeClockStepper(Time, TimeSpan.FromMilliseconds(5))
             .AdvanceUntilDoneAsync(task, max ?? TimeSpan.FromSeconds(10));

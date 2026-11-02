@@ -1,6 +1,7 @@
 using StationKit.Abstractions.Motion;
 using StationKit.Alarms;
 using StationKit.Safety;
+using StationKit.Stations;
 
 namespace StationKit.Machines;
 
@@ -38,7 +39,7 @@ public sealed record MachineFault(DateTimeOffset At, string Source, string Descr
 /// 這裡只負責讓軟件跟上現場、報出原因、不再下發新運動。設計說明見 docs/design/machine-coordinator.md。
 /// </para>
 /// </summary>
-public sealed class Machine
+public sealed partial class Machine
 {
     private readonly object _sync = new();
     private readonly MachineConfig _config;
@@ -60,6 +61,10 @@ public sealed class Machine
         _config = config;
         _alarms = alarms;
         _time = timeProvider ?? TimeProvider.System;
+        foreach (var station in config.Stations)
+        {
+            station.StateChanged += OnStationStateChanged;
+        }
     }
 
     public string Name => _config.Name;
@@ -200,10 +205,26 @@ public sealed class Machine
         lock (_sync)
         {
             _firstFault ??= new MachineFault(_time.GetUtcNow(), Name, description);
+            _state = MachineState.Aborting;
         }
 
+        NotifyState(MachineState.Aborting);
+        var stations = _config.Stations.Select(StopStationAsync).ToList();
         await Task.WhenAll(_config.Axes.Select(a => StopAxisAsync(a.Axis, StopMode.Decelerate))).ConfigureAwait(false);
+        await Task.WhenAll(stations).ConfigureAwait(false);
         Transition(MachineState.Faulted);
+    }
+
+    private static async Task StopStationAsync(Station station)
+    {
+        try
+        {
+            await station.StopAsync().ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // Station.StopAsync 只等循環結束，循環的異常已經在工站內部轉成報警
+        }
     }
 
     /// <summary>
