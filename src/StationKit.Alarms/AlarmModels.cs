@@ -30,9 +30,14 @@ public sealed class AlarmCatalog
 {
     public const string UnknownCode = "SYS-000";
 
+    /// <summary>事件訂閱者拋出了異常。提示級：運動和工站不受影響，但不能讓它悄悄失效。</summary>
+    public const string SubscriberFaultCode = "SYS-001";
+
     private readonly Dictionary<string, AlarmDefinition> _definitions = new(StringComparer.Ordinal)
     {
         [UnknownCode] = new(UnknownCode, AlarmSeverity.Error, "未登記的報警代碼", "聯繫軟件工程師補充報警表"),
+        [SubscriberFaultCode] = new(SubscriberFaultCode, AlarmSeverity.Warning, "事件訂閱者異常",
+            "界面或日誌可能沒有收到這次通知；查看詳情並聯繫軟件工程師"),
     };
 
     public AlarmCatalog Add(AlarmDefinition definition)

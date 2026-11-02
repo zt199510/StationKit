@@ -71,4 +71,66 @@ public class AlarmCenterTests
 
         Assert.Equal(["C", "B"], _alarms.History.Select(h => h.Source));
     }
+    [Fact]
+    public void 訂閱者拋異常_Raise不拋_其他訂閱者仍收到_並留下提示()
+    {
+        var received = new List<string>();
+        _alarms.Raised += (_, a) =>
+        {
+            if (a.Definition.Code == "AX-001")
+            {
+                throw new InvalidOperationException("界面已關閉");
+            }
+        };
+        _alarms.Raised += (_, a) => received.Add(a.Definition.Code);
+
+        _alarms.Raise("AX-001", "上工位");
+
+        Assert.Equal(["AX-001", AlarmCatalog.SubscriberFaultCode], received);
+        var hint = _alarms.Active.Single(a => a.Definition.Code == AlarmCatalog.SubscriberFaultCode);
+        Assert.Equal("界面已關閉", hint.Detail);
+        Assert.Equal(AlarmSeverity.Warning, hint.Definition.Severity);
+    }
+
+    [Fact]
+    public void 訂閱者對任何報警都拋異常_不會無限遞歸()
+    {
+        var calls = 0;
+        _alarms.Raised += (_, _) =>
+        {
+            calls++;
+            throw new InvalidOperationException("一直失敗");
+        };
+
+        _alarms.Raise("AX-001", "上工位");
+
+        Assert.Equal(2, calls);
+        Assert.Equal(2, _alarms.Active.Count);
+    }
+
+    [Fact]
+    public void 清除時訂閱者拋異常_Clear不拋且報警已清除()
+    {
+        _alarms.Cleared += (_, _) => throw new InvalidOperationException("日誌寫入失敗");
+        _alarms.Raise("AX-001", "上工位");
+
+        Assert.True(_alarms.Clear("AX-001", "上工位"));
+
+        Assert.DoesNotContain(_alarms.Active, a => a.Definition.Code == "AX-001");
+        Assert.Contains(_alarms.Active, a => a.Definition.Code == AlarmCatalog.SubscriberFaultCode);
+    }
+
+    [Fact]
+    public void 按來源查詢和清除_包含下一層_不包含名稱相近的來源()
+    {
+        _alarms.Raise("AX-001", "上工位/善後");
+        _alarms.Raise("AX-001", "上工位2");
+
+        Assert.True(_alarms.HasBlockingAlarm("上工位"));
+
+        _alarms.ClearSource("上工位");
+
+        Assert.False(_alarms.HasBlockingAlarm("上工位"));
+        Assert.Equal("上工位2", Assert.Single(_alarms.Active).Source);
+    }
 }

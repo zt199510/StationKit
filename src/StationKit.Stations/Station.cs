@@ -99,7 +99,7 @@ public abstract class Station
             _runTask = LoopAsync(cycleLimit, _runCts.Token);
         }
 
-        StateChanged?.Invoke(this, StationState.Running);
+        NotifyState(StationState.Running);
         return _runTask;
     }
 
@@ -116,7 +116,7 @@ public abstract class Station
             _state = StationState.Pausing;
         }
 
-        StateChanged?.Invoke(this, StationState.Pausing);
+        NotifyState(StationState.Pausing);
     }
 
     public void Resume()
@@ -135,7 +135,7 @@ public abstract class Station
         }
 
         signal?.TrySetResult();
-        StateChanged?.Invoke(this, StationState.Running);
+        NotifyState(StationState.Running);
     }
 
     public async Task StopAsync()
@@ -154,7 +154,7 @@ public abstract class Station
             runTask = _runTask;
         }
 
-        StateChanged?.Invoke(this, StationState.Stopping);
+        NotifyState(StationState.Stopping);
         await (cts?.CancelAsync() ?? Task.CompletedTask).ConfigureAwait(false);
         await runTask.ConfigureAwait(false);
     }
@@ -169,6 +169,12 @@ public abstract class Station
                 return;
             }
 
+            // 進入 Faulted 後才執行善後：此時啟動新一輪，還沒結束的善後會把新的運動停掉
+            if (!_runTask.IsCompleted)
+            {
+                throw new InvalidOperationException($"工站 {Name} 的故障善後尚未結束，不能復位");
+            }
+
             if (Alarms.HasBlockingAlarm(Name))
             {
                 throw new InvalidOperationException($"工站 {Name} 仍有未清除的報警，請先處理並清除報警");
@@ -177,7 +183,7 @@ public abstract class Station
             _state = StationState.Idle;
         }
 
-        StateChanged?.Invoke(this, StationState.Idle);
+        NotifyState(StationState.Idle);
     }
 
     /// <summary>一個循環的工藝步驟。</summary>
@@ -208,7 +214,7 @@ public abstract class Station
 
         if (enteredPause)
         {
-            StateChanged?.Invoke(this, StationState.Paused);
+            NotifyState(StationState.Paused);
         }
 
         if (signal != null)
@@ -253,6 +259,19 @@ public abstract class Station
         }
     }
 
+    /// <summary>隔離訂閱者異常：否則界面的一個錯誤會跳過故障善後，軸不會停。</summary>
+    private void NotifyState(StationState state)
+    {
+        try
+        {
+            StateChanged?.Invoke(this, state);
+        }
+        catch (Exception ex)
+        {
+            Alarms.Raise(AlarmCatalog.SubscriberFaultCode, Name, ex.Message);
+        }
+    }
+
     private void Transition(StationState state)
     {
         lock (_sync)
@@ -262,6 +281,6 @@ public abstract class Station
             _resumeSignal = null;
         }
 
-        StateChanged?.Invoke(this, state);
+        NotifyState(state);
     }
 }

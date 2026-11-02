@@ -93,6 +93,74 @@ public class StationTests
         Assert.Equal(StationAlarms.ResourceTimeout, Assert.Single(_alarms.Active).Definition.Code);
     }
 
+    [Fact]
+    public async Task 報警訂閱者拋異常_工站照常進入故障並執行善後()
+    {
+        // 反證：Raise 不隔離訂閱者時，異常跳過 Transition 和 OnFaultedAsync，軸不會停，工站一直是 Running
+        _alarms.Raised += (_, _) => throw new InvalidOperationException("界面已關閉");
+        var station = new ScriptedStation(_alarms) { Failure = new InvalidOperationException("Z 軸未到位") };
+
+        await station.RunAsync();
+
+        Assert.Equal(StationState.Faulted, station.State);
+        Assert.Same(station.Failure, station.FaultHandled);
+    }
+
+    [Fact]
+    public async Task 狀態訂閱者拋異常_工站照常進入故障並執行善後()
+    {
+        var station = new ScriptedStation(_alarms) { Failure = new InvalidOperationException("Z 軸未到位") };
+        station.StateChanged += (_, _) => throw new InvalidOperationException("界面已關閉");
+
+        await station.RunAsync();
+
+        Assert.Equal(StationState.Faulted, station.State);
+        Assert.Same(station.Failure, station.FaultHandled);
+        Assert.Contains(_alarms.Active, a => a.Definition.Code == AlarmCatalog.SubscriberFaultCode);
+    }
+
+    [Fact]
+    public async Task 善後失敗的報警_阻止復位和啟動_清除工站來源後才能復位()
+    {
+        var station = new ScriptedStation(_alarms)
+        {
+            Failure = new InvalidOperationException("Z 軸未到位"),
+            FaultCleanup = () => throw new InvalidOperationException("停軸失敗"),
+        };
+
+        await station.RunAsync();
+        // 主報警清掉以後，只剩善後失敗這一條（軸可能沒停）。反證：按來源全等比較時這裡能復位
+        _alarms.Clear(StationAlarms.CycleFault, station.Name);
+        Assert.Throws<InvalidOperationException>(() => station.Reset());
+
+        _alarms.ClearSource(station.Name);
+        station.Reset();
+
+        Assert.Equal(StationState.Idle, station.State);
+    }
+
+    [Fact]
+    public async Task 善後未結束時不能復位()
+    {
+        var cleanup = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var station = new ScriptedStation(_alarms)
+        {
+            Failure = new InvalidOperationException("Z 軸未到位"),
+            FaultCleanup = () => cleanup.Task,
+        };
+
+        var run = station.RunAsync();
+        await WaitForAsync(station, StationState.Faulted);
+        _alarms.ClearSource(station.Name);
+
+        Assert.Throws<InvalidOperationException>(() => station.Reset());
+
+        cleanup.SetResult();
+        await run;
+        station.Reset();
+        Assert.Equal(StationState.Idle, station.State);
+    }
+
     private static async Task WaitForAsync(Station station, StationState expected)
     {
         var deadline = DateTime.UtcNow.AddSeconds(5);
@@ -118,6 +186,8 @@ public class StationTests
         public Exception? Failure { get; set; }
 
         public Exception? FaultHandled { get; private set; }
+
+        public Func<Task>? FaultCleanup { get; init; }
 
         public Task CycleStarted => _started.Task;
 
@@ -155,7 +225,7 @@ public class StationTests
         protected override Task OnFaultedAsync(Exception exception)
         {
             FaultHandled = exception;
-            return Task.CompletedTask;
+            return FaultCleanup?.Invoke() ?? Task.CompletedTask;
         }
 
         private static TaskCompletionSource NewSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
